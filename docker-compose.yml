@@ -9,6 +9,9 @@ services:
       BRIDGE_PORT: 8090
       BRIDGE_AUTH_TOKEN: ${BRIDGE_AUTH_TOKEN:-}
       LOG_LINES_DEFAULT: 200
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    gpus: all
     expose:
       - "8090"
     volumes:

@@ -185,7 +185,7 @@ app.use("/v1", auth);
 
 app.get("/v1/gpus", (_req, res) => {
   execFile(
-    "/usr/bin/nvidia-smi",
+    "nvidia-smi",
     [
       "--query-gpu=index,name,memory.total,memory.used,utilization.gpu",
       "--format=csv,noheader,nounits"
