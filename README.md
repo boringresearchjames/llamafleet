@@ -9,6 +9,10 @@ Primary target:
 
 This project is designed for the exact case where a single runtime path is not delivering enough parallel throughput on older cards, and multiple LM Studio instances are used as the concurrency strategy.
 
+## Dashboard
+
+![LM Launch Dashboard](docs/dashboard.png)
+
 ## Status
 
 Active implementation with Docker-first orchestration.
