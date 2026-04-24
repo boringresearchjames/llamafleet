@@ -750,6 +750,7 @@ app.post("/v1/instances/start", async (req, res) => {
       profileId: profile.id,
       profileName: profile.name,
       effectiveModel: modelToUse,
+      pendingModel: null,
       host: profile.host || "127.0.0.1",
       port: profile.port,
       state: launch.state || "starting",
@@ -839,16 +840,50 @@ app.post("/v1/instances/:id/model", (req, res) => {
   const applyMode = req.body?.applyMode || "next_restart";
   if (!model) return res.status(400).json({ error: "model is required" });
 
-  if (applyMode === "restart_now") {
-    instance.state = "switching_model";
-  }
+  const profile = state.profiles.find((p) => p.id === instance.profileId);
+  if (!profile) return res.status(404).json({ error: "profile not found for instance" });
 
-  instance.effectiveModel = model;
-  instance.updatedAt = now();
-  saveState(state);
-  audit("instance.model.switch", { instanceId: instance.id, model, applyMode });
+  const applySwitch = async () => {
+    if (applyMode === "restart_now") {
+      instance.state = "switching_model";
+      instance.updatedAt = now();
+      saveState(state);
 
-  res.json({ success: true, instance });
+      await bridgeFetch("POST", `/v1/instances/${instance.id}/stop`);
+      const launch = await bridgeFetch("POST", "/v1/instances/start", {
+        instanceId: instance.id,
+        profile: {
+          ...profile,
+          model,
+          maxInflightRequests: instance.maxInflightRequests || 4
+        }
+      });
+
+      instance.effectiveModel = model;
+      instance.pendingModel = null;
+      instance.state = launch.state || "starting";
+      instance.pid = launch.pid || null;
+      instance.lastError = null;
+      instance.updatedAt = now();
+      saveState(state);
+      audit("instance.model.switch", { instanceId: instance.id, model, applyMode });
+      return res.json({ success: true, instance });
+    }
+
+    instance.pendingModel = model;
+    instance.updatedAt = now();
+    saveState(state);
+    audit("instance.model.switch", { instanceId: instance.id, model, applyMode });
+    return res.json({ success: true, instance });
+  };
+
+  applySwitch().catch((error) => {
+    instance.state = "unhealthy";
+    instance.lastError = String(error.message || error);
+    instance.updatedAt = now();
+    saveState(state);
+    res.status(502).json({ error: String(error.message || error) });
+  });
 });
 
 app.get("/v1/instances/:id/logs", async (req, res) => {
@@ -878,6 +913,7 @@ app.get("/v1/manifest/ready", (_req, res) => {
       },
       profile_model: null,
       effective_model: x.effectiveModel,
+      pending_model: x.pendingModel || null,
       inflight_requests: x.inflightRequests,
       max_inflight_requests: x.maxInflightRequests,
       queue_depth: x.queueDepth,
@@ -911,7 +947,8 @@ app.get("/v1/instances/:id/connection", (req, res) => {
       responses: `${base}/v1/responses`
     },
     profile_model: null,
-    effective_model: instance.effectiveModel
+    effective_model: instance.effectiveModel,
+    pending_model: instance.pendingModel || null
   });
 });
 
@@ -1080,20 +1117,10 @@ app.get("/v1/lmstudio/models", async (_req, res) => {
   try {
     const lmStudioPort = process.env.LMSTUDIO_PORT || 1234;
     const lmStudioHost = process.env.LMSTUDIO_HOST || "127.0.0.1";
-    const response = await fetch(`http://${lmStudioHost}:${lmStudioPort}/v1/models`, {
-      method: "GET",
-      headers: { "content-type": "application/json" },
-      timeout: 5000
-    });
-
-    if (!response.ok) {
-      return res.status(503).json({
-        error: "LM Studio not available",
-        message: "Could not reach LM Studio models endpoint"
-      });
-    }
-
-    const data = await response.json();
+    const data = await bridgeFetch(
+      "GET",
+      `/v1/models?host=${encodeURIComponent(String(lmStudioHost))}&port=${encodeURIComponent(String(lmStudioPort))}`
+    );
     const models = Array.isArray(data.data)
       ? data.data.map((m) => ({ id: m.id, name: m.id }))
       : [];
@@ -1109,19 +1136,7 @@ app.get("/v1/lmstudio/models", async (_req, res) => {
 
 app.get("/v1/system/gpus", requireAdminToken, async (req, res) => {
   try {
-    const response = await fetch(`${bridgeUrl}/v1/gpus`, {
-      headers: { Authorization: `Bearer ${bridgeToken}` },
-      timeout: 5000
-    });
-
-    if (!response.ok) {
-      return res.status(503).json({
-        error: "GPU detection unavailable",
-        message: "Could not reach bridge GPU endpoint"
-      });
-    }
-
-    const data = await response.json();
+    const data = await bridgeFetch("GET", "/v1/gpus");
     res.json(data);
   } catch (error) {
     res.status(503).json({

@@ -2,6 +2,8 @@
 
 LM Launch is a Docker-first orchestration layer for running multiple headless LM Studio instances in parallel on a single GPU host.
 
+This project is designed around LM Studio headless service mode (`llmster` / `lms daemon`) and does not require running the LM Studio desktop GUI in production.
+
 Primary target:
 - Ubuntu 24.03
 - Multi-GPU NVIDIA hosts (including V100 clusters on one machine)
@@ -32,6 +34,7 @@ Recent changes (April 2026):
 - Max inflight concurrency is now per instance (launch-time), not profile-level
 - GPU selection uses multi-select loaded from nvidia-smi via bridge/API
 - Dashboard includes a README/help card for operator guidance
+- Headless alignment: API model/GPU discovery and runtime controls route through the bridge service
 
 ## Quick Start
 
@@ -70,12 +73,14 @@ Yes, with one of these modes:
 1. In-container runtime mode
 - Bridge container installs lms during image build (default INSTALL_LMS=true).
 - Bridge can execute runtime start commands directly, including lms daemon up and lms server start.
-- This is the simplest mode for Docker-first control.
+- This is the primary and recommended mode for this project.
 
 2. Host-managed runtime mode
 - Keep LM Studio installed on host and run runtime there.
 - Bridge/API still orchestrate profile and lifecycle logic, but execution target must be host reachable.
 - Use this when you need host-native runtime placement guarantees.
+
+Note: LM Studio desktop app headless mode is not required for this stack. The intended deployment path is service-mode runtime without GUI overhead.
 
 ## Docker Permissions (Ubuntu)
 

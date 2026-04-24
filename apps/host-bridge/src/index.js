@@ -181,6 +181,38 @@ app.get("/v1/gpus", (_req, res) => {
   );
 });
 
+app.get("/v1/models", async (req, res) => {
+  const host = String(req.query.host || "127.0.0.1");
+  const port = Number(req.query.port || 1234);
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return res.status(400).json({ error: "invalid port" });
+  }
+
+  try {
+    const timeout = withTimeout(readinessHttpTimeoutMs);
+    const response = await fetch(`http://${host}:${port}/v1/models`, {
+      method: "GET",
+      headers: { "content-type": "application/json" },
+      signal: timeout.signal
+    });
+    timeout.done();
+
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(502).json({
+        error: "lmstudio models unavailable",
+        detail: text || `status ${response.status}`
+      });
+    }
+
+    const data = await response.json();
+    return res.json(data);
+  } catch (error) {
+    return res.status(502).json({ error: "lmstudio models unavailable", detail: String(error.message || error) });
+  }
+});
+
 app.get("/v1/instances", (_req, res) => {
   const data = [...instances.entries()].map(([instanceId, value]) => ({
     instanceId,
