@@ -147,6 +147,36 @@ function tail(filePath, lines) {
   return rows.slice(-lines).join("\n");
 }
 
+function gpuRuntimeDiagnostics(detail) {
+  return {
+    runtimeDetected: false,
+    checks: [
+      {
+        name: "Host NVIDIA driver",
+        command: "nvidia-smi",
+        expected: "Lists GPU devices on host"
+      },
+      {
+        name: "Container NVIDIA runtime",
+        command: "docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi",
+        expected: "Runs nvidia-smi in a test container"
+      },
+      {
+        name: "Bridge container GPU access",
+        command: "docker compose exec -T bridge sh -lc \"nvidia-smi -L\"",
+        expected: "Lists GPUs from bridge container"
+      }
+    ],
+    instructions: [
+      "Install/update NVIDIA GPU driver on the server and verify host nvidia-smi works.",
+      "Install NVIDIA Container Toolkit and restart Docker daemon.",
+      "Configure compose runtime for bridge service with GPU access (gpus: all or device_requests).",
+      "Rebuild and restart: docker compose down --remove-orphans && docker compose up -d --build bridge api web"
+    ],
+    detail: String(detail || "nvidia-smi not found")
+  };
+}
+
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "bridge", at: new Date().toISOString() });
 });
@@ -162,7 +192,11 @@ app.get("/v1/gpus", (_req, res) => {
     ],
     (error, stdout) => {
       if (error) {
-        return res.status(500).json({ error: "nvidia-smi unavailable", detail: error.message });
+        return res.json({
+          data: [],
+          warning: "nvidia-smi unavailable",
+          diagnostics: gpuRuntimeDiagnostics(error.message)
+        });
       }
 
       const data = stdout
@@ -179,8 +213,13 @@ app.get("/v1/gpus", (_req, res) => {
             utilization_percent: Number(util)
           };
         });
-
-      return res.json({ data });
+      return res.json({
+        data,
+        diagnostics: {
+          runtimeDetected: true,
+          detail: "nvidia-smi is available in bridge container"
+        }
+      });
     }
   );
 });

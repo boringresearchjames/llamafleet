@@ -97,7 +97,7 @@ $("loadLaunchModelsBtn").onclick = () => loadLMStudioModels("launchInstanceModel
 
 async function loadSystemGpus() {
   try {
-    const { data = [] } = await api("/v1/system/gpus");
+    const { data = [], warning, diagnostics } = await api("/v1/system/gpus");
     const gpusSelect = $("profileGpus");
     const currentSelected = Array.from(gpusSelect.selectedOptions).map((opt) => opt.value);
 
@@ -111,6 +111,12 @@ async function loadSystemGpus() {
       }
       gpusSelect.appendChild(option);
     });
+
+    if (warning) {
+      const diagDetail = diagnostics?.detail ? ` (${diagnostics.detail})` : "";
+      toast(`GPU runtime warning: ${warning}${diagDetail}`);
+      return;
+    }
 
     toast(`Loaded ${data.length} GPUs`);
   } catch (error) {
