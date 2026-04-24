@@ -44,24 +44,11 @@
       </section>
 
       <section class="card span-4">
-        <h2>README</h2>
-        <p class="card-subtitle">Operator notes surfaced in-dashboard.</p>
-        <details style="margin-bottom: 10px;">
-          <summary style="cursor: pointer;">Quick Start</summary>
-          <div style="padding-top: 8px; font-size: 13px; line-height: 1.45;">
-            1. Configure token and API base URL. <br />
-            2. Create a profile (runtime defaults). <br />
-            3. Launch instances with model + per-instance concurrency. <br />
-            4. Use copy buttons for base/chat/model routing values.
-          </div>
-        </details>
-        <details>
-          <summary style="cursor: pointer;">Architecture</summary>
-          <div style="padding-top: 8px; font-size: 13px; line-height: 1.45;">
-            Docker stack: API (8081), Web (8080), Bridge (internal).<br />
-            Profiles store runtime defaults; instances store effective model and inflight limits.
-          </div>
-        </details>
+        <h2>Help</h2>
+        <p class="card-subtitle">Open project documentation from the API help endpoint.</p>
+        <div class="button-row">
+          <button id="openHelp">Open Help</button>
+        </div>
       </section>
 
       <section class="card span-4">

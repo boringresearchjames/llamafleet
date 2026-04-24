@@ -6,3 +6,4 @@ data/
 coverage/
 dist/
 .DS_Store
+export-images/

@@ -363,52 +363,10 @@ app.get("/", (_req, res) => {
 });
 
 app.get("/help", (_req, res) => {
-  res.json({
-    name: "LM Launch API",
-    version: "0.1.0",
-    auth: {
-      type: "Bearer token",
-      header: "Authorization: Bearer <API_AUTH_TOKEN>",
-      note: "All /v1 routes require auth"
-    },
-    quick_links: {
-      health: "/health",
-      login: "/auth/login",
-      agent_capabilities: "/v1/agent/capabilities",
-      agent_action: "/v1/agent/action",
-      profiles: "/v1/profiles",
-      instances: "/v1/instances",
-      ready_manifest: "/v1/manifest/ready",
-      security_settings: "/v1/settings/security",
-      config_status: "/v1/config/status",
-      config_export_yaml: "/v1/config/export.yaml",
-      config_import_yaml: "/v1/config/import.yaml?dryRun=true|false"
-    },
-    examples: [
-      {
-        title: "Get ready manifest via agent interface",
-        request: {
-          method: "POST",
-          path: "/v1/agent/action",
-          body: {
-            action: "manifest.ready",
-            input: {}
-          }
-        }
-      },
-      {
-        title: "Start instance",
-        request: {
-          method: "POST",
-          path: "/v1/instances/start",
-          body: {
-            profileId: "prof_qwen",
-            instanceId: "inst_qwen_1"
-          }
-        }
-      }
-    ]
-  });
+  const readmeUrl =
+    process.env.HELP_README_URL ||
+    "https://github.com/boringresearchjames/lmlaunch/blob/main/README.md";
+  res.redirect(302, readmeUrl);
 });
 
 app.post("/auth/login", (req, res) => {

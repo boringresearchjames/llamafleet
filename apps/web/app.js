@@ -60,6 +60,15 @@ $("saveApi").onclick = () => {
   toast("API settings saved");
 };
 
+$("openHelp").onclick = () => {
+  const base = (settings.apiBase || "").trim().replace(/\/$/, "");
+  if (!base) {
+    toast("Set API Base URL first");
+    return;
+  }
+  window.open(`${base}/help`, "_blank", "noopener,noreferrer");
+};
+
 async function loadLMStudioModels(selectElementId) {
   try {
     const { models = [] } = await api("/v1/lmstudio/models");
