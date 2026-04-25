@@ -1230,23 +1230,12 @@ app.get("/v1/runtime/backends", async (_req, res) => {
   const lm = await runCommand("lms", ["--version"]);
   const lmVersion = (lm.stdout || lm.stderr).trim().split("\n").find(Boolean) || null;
 
-  const nvidiaSummary = await runCommand("nvidia-smi", []);
-  const cudaMatch = (nvidiaSummary.stdout || "").match(/CUDA Version:\s*([0-9.]+)/i);
-  const driverMatch = (nvidiaSummary.stdout || "").match(/Driver Version:\s*([0-9.]+)/i);
-  const hasCuda = nvidiaSummary.ok;
-
-  const vulkanSummary = await runCommand("vulkaninfo", ["--summary"]);
-  const vulkanFirstLine = (vulkanSummary.stdout || "").trim().split("\n").find(Boolean) || null;
-  const hasVulkan = vulkanSummary.ok;
-
   const osLabelByPlatform = {
     win32: "Windows",
     linux: "Linux",
     darwin: "macOS"
   };
   const osLabel = osLabelByPlatform[process.platform] || process.platform;
-  const cudaVersion = cudaMatch ? String(cudaMatch[1]) : null;
-  const cudaMajor = cudaVersion ? String(cudaVersion).split(".")[0] : null;
 
   const ggufRuntimes = [
     {
@@ -1267,26 +1256,83 @@ app.get("/v1/runtime/backends", async (_req, res) => {
     }
   ];
 
-  if (hasCuda) {
-    ggufRuntimes.push({
-      id: `gguf:cuda:${cudaVersion || "detected"}`,
-      backend: "cuda",
-      label: `${cudaMajor ? `CUDA ${cudaMajor}` : "CUDA"} llama.cpp (${osLabel})`,
-      version: lmVersion,
-      available: true,
-      detail: driverMatch ? `NVIDIA driver ${driverMatch[1]} • CUDA ${cudaVersion || "detected"}` : `CUDA ${cudaVersion || "detected"}`
-    });
-  }
+  // Query all available CUDA versions from lms runtime ls
+  const runtimesList = await runCommand("lms", ["runtime", "ls"]);
+  if (runtimesList.ok) {
+    const lines = (runtimesList.stdout || "").split("\n").map(l => l.trim()).filter(Boolean);
+    const cudaVersions = new Set();
+    let hasVulkan = false;
 
-  if (hasVulkan) {
-    ggufRuntimes.push({
-      id: "gguf:vulkan",
-      backend: "vulkan",
-      label: `Vulkan llama.cpp (${osLabel})`,
-      version: lmVersion,
-      available: true,
-      detail: vulkanFirstLine || "Vulkan runtime detected"
-    });
+    for (const line of lines) {
+      const cudaMatch = line.match(/cuda[:\s]+([0-9.]+)/i);
+      const vulkanMatch = line.match(/vulkan/i);
+      if (cudaMatch) {
+        cudaVersions.add(String(cudaMatch[1]));
+      }
+      if (vulkanMatch) {
+        hasVulkan = true;
+      }
+    }
+
+    // Add all detected CUDA versions
+    for (const version of Array.from(cudaVersions).sort().reverse()) {
+      const major = String(version).split(".")[0];
+      ggufRuntimes.push({
+        id: `gguf:cuda:${version}`,
+        backend: "cuda",
+        label: `CUDA ${major} llama.cpp (${osLabel})`,
+        version: lmVersion,
+        available: true,
+        detail: `CUDA ${version}`
+      });
+    }
+
+    // Add Vulkan if detected
+    if (hasVulkan) {
+      ggufRuntimes.push({
+        id: "gguf:vulkan",
+        backend: "vulkan",
+        label: `Vulkan llama.cpp (${osLabel})`,
+        version: lmVersion,
+        available: true,
+        detail: "Vulkan runtime"
+      });
+    }
+  } else {
+    // Fallback: detect via nvidia-smi and vulkaninfo if lms runtime ls fails
+    const nvidiaSummary = await runCommand("nvidia-smi", []);
+    const cudaMatch = (nvidiaSummary.stdout || "").match(/CUDA Version:\s*([0-9.]+)/i);
+    const driverMatch = (nvidiaSummary.stdout || "").match(/Driver Version:\s*([0-9.]+)/i);
+    const hasCuda = nvidiaSummary.ok;
+
+    const vulkanSummary = await runCommand("vulkaninfo", ["--summary"]);
+    const vulkanFirstLine = (vulkanSummary.stdout || "").trim().split("\n").find(Boolean) || null;
+    const hasVulkan = vulkanSummary.ok;
+
+    const cudaVersion = cudaMatch ? String(cudaMatch[1]) : null;
+    const cudaMajor = cudaVersion ? String(cudaVersion).split(".")[0] : null;
+
+    if (hasCuda && cudaVersion) {
+      ggufRuntimes.push({
+        id: `gguf:cuda:${cudaVersion}`,
+        backend: "cuda",
+        label: `CUDA ${cudaMajor || "detected"} llama.cpp (${osLabel})`,
+        version: lmVersion,
+        available: true,
+        detail: driverMatch ? `NVIDIA driver ${driverMatch[1]} • CUDA ${cudaVersion}` : `CUDA ${cudaVersion}`
+      });
+    }
+
+    if (hasVulkan) {
+      ggufRuntimes.push({
+        id: "gguf:vulkan",
+        backend: "vulkan",
+        label: `Vulkan llama.cpp (${osLabel})`,
+        version: lmVersion,
+        available: true,
+        detail: vulkanFirstLine || "Vulkan runtime detected"
+      });
+    }
   }
 
   return res.json({
