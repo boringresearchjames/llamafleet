@@ -24,6 +24,7 @@ const gpuBleedMaxDeltaMiB = Number(process.env.GPU_BLEED_MAX_DELTA_MIB || 256);
 const allowBleedOnOtherAssignedGpus = process.env.GPU_BLEED_ALLOW_OTHER_ASSIGNED === "true";
 const bootstrapHost = String(process.env.LMSTUDIO_HOST || "127.0.0.1");
 const bootstrapPort = Number(process.env.LMSTUDIO_PORT || 1234);
+const runtimeSelectionRequired = process.env.RUNTIME_SELECTION_REQUIRED !== "false";
 
 if (!bridgeAuthEnabled) {
   console.warn("Bridge auth disabled: BRIDGE_AUTH_TOKEN not set.");
@@ -629,10 +630,13 @@ function isRuntimeAliasNotFoundError(text) {
 }
 
 async function selectRuntime(runtimeId, env, instanceId = null) {
-  if (!runtimeId || runtimeId === "auto") {
+  if (!runtimeId) {
     return;
   }
   const runtimeIdStrRaw = stripAnsiAndControl(runtimeId);
+  if (runtimeIdStrRaw === "auto" || runtimeIdStrRaw === "gguf:auto") {
+    return;
+  }
   const runtimeAliasMatch = runtimeIdStrRaw.match(/(llama\.cpp-[a-z0-9._-]+@[0-9]+(?:\.[0-9]+)*)/i);
   const runtimeIdStr = runtimeAliasMatch ? runtimeAliasMatch[1] : runtimeIdStrRaw;
   if (!runtimeIdStr) {
@@ -651,16 +655,23 @@ async function selectRuntime(runtimeId, env, instanceId = null) {
   } catch (error) {
     const errorText = String(error?.message || error);
     if (isLmsCliPasskeyMismatchError(errorText) || isRuntimeAliasNotFoundError(errorText)) {
+      const reason = isLmsCliPasskeyMismatchError(errorText)
+        ? "lms_cli_passkey_mismatch"
+        : "runtime_alias_not_found";
       if (instanceId) {
-        writeMeta(instanceId, "instance.runtime.selection.skipped", {
+        writeMeta(instanceId, runtimeSelectionRequired ? "instance.runtime.selection.failed" : "instance.runtime.selection.skipped", {
           runtime_id: runtimeIdStr,
-          reason: isLmsCliPasskeyMismatchError(errorText)
-            ? "lms_cli_passkey_mismatch"
-            : "runtime_alias_not_found",
+          reason,
           error: errorText
         });
       }
-      return;
+      if (!runtimeSelectionRequired) {
+        return;
+      }
+      throw new Error(
+        `Failed to select runtime ${runtimeIdStr}: ${errorText} `
+        + "Bridge is in strict runtime mode (RUNTIME_SELECTION_REQUIRED=true)."
+      );
     }
     if (instanceId) {
       writeMeta(instanceId, "instance.runtime.selection.failed", {
