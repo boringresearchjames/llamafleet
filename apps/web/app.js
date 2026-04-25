@@ -292,8 +292,51 @@ async function sendInstanceDiagnosticPrompt() {
       body: JSON.stringify(payload)
     });
     const latencyMs = Date.now() - startedAt;
-    const content = String(response?.choices?.[0]?.message?.content || "").trim();
+    const contentParts = [];
+    const choice = response?.choices?.[0] || null;
+    const msgContent = choice?.message?.content;
+
+    if (typeof msgContent === "string") {
+      contentParts.push(msgContent);
+    } else if (Array.isArray(msgContent)) {
+      for (const part of msgContent) {
+        if (typeof part === "string") {
+          contentParts.push(part);
+          continue;
+        }
+        const textValue = part?.text ?? part?.content ?? part?.value;
+        if (typeof textValue === "string") {
+          contentParts.push(textValue);
+        }
+      }
+    }
+
+    if (contentParts.length === 0 && typeof choice?.text === "string") {
+      contentParts.push(choice.text);
+    }
+
+    if (contentParts.length === 0 && typeof response?.output_text === "string") {
+      contentParts.push(response.output_text);
+    }
+
+    if (contentParts.length === 0 && Array.isArray(response?.output)) {
+      for (const item of response.output) {
+        const segments = Array.isArray(item?.content) ? item.content : [];
+        for (const seg of segments) {
+          const textValue = seg?.text ?? seg?.content ?? seg?.value;
+          if (typeof textValue === "string") {
+            contentParts.push(textValue);
+          }
+        }
+      }
+    }
+
+    const content = contentParts.join("\n").trim();
     const usage = response?.usage || null;
+    const hasVisibleText = content.length > 0;
+    const responsePreview = hasVisibleText
+      ? content
+      : JSON.stringify(response, null, 2).slice(0, 4000);
 
     result.textContent = [
       `status: ok`,
@@ -302,8 +345,8 @@ async function sendInstanceDiagnosticPrompt() {
       `latency_ms: ${latencyMs}`,
       usage ? `usage: prompt=${usage.prompt_tokens || 0} completion=${usage.completion_tokens || 0} total=${usage.total_tokens || 0}` : "usage: n/a",
       "",
-      "response:",
-      content || "(empty response)"
+      hasVisibleText ? "response:" : "response: (no text field extracted; showing raw payload)",
+      responsePreview || "(empty response)"
     ].join("\n");
     toast(`Diagnostic test succeeded for ${targetId}`);
   } catch (error) {
