@@ -13,10 +13,11 @@ Default port:
 ## Runtime env vars
 
 - PORT (default: 8081)
-- API_AUTH_TOKEN (required for /v1 routes)
+- API_AUTH_TOKEN (optional; when unset auth is disabled)
 - BRIDGE_URL (default: http://localhost:8090)
-- BRIDGE_AUTH_TOKEN (required for bridge calls)
-- STATE_FILE (default: /data/state.json)
+- BRIDGE_AUTH_TOKEN (optional; used when bridge auth is enabled)
+- STATE_FILE (default: ./data/state.json)
+- SHARED_CONFIG_FILE (default: ./data/shared-config.yaml)
 
 ## Built-in docs endpoints
 

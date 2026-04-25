@@ -24,8 +24,8 @@ const port = Number(process.env.PORT || 8081);
 const apiToken = process.env.API_AUTH_TOKEN || "change-me";
 const bridgeUrl = process.env.BRIDGE_URL || "http://localhost:8090";
 const bridgeToken = process.env.BRIDGE_AUTH_TOKEN || "change-me";
-const stateFile = process.env.STATE_FILE || "/data/state.json";
-const sharedConfigFile = process.env.SHARED_CONFIG_FILE || "/data/shared-config.yaml";
+const stateFile = process.env.STATE_FILE || path.resolve(process.cwd(), "data", "state.json");
+const sharedConfigFile = process.env.SHARED_CONFIG_FILE || path.resolve(process.cwd(), "data", "shared-config.yaml");
 const apiAuthEnabled = Boolean(apiToken && apiToken !== "change-me");
 const bridgeAuthEnabled = Boolean(bridgeToken && bridgeToken !== "change-me");
 

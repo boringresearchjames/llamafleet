@@ -1,0 +1,80 @@
+import { spawn } from "child_process";
+
+const isWindows = process.platform === "win32";
+const npmCmd = isWindows ? "npm.cmd" : "npm";
+const isDev = process.argv.includes("--dev");
+
+const services = [
+  {
+    name: "bridge",
+    command: npmCmd,
+    args: ["run", isDev ? "dev:bridge" : "start:bridge"],
+    env: {
+      BRIDGE_PORT: process.env.BRIDGE_PORT || "8090"
+    }
+  },
+  {
+    name: "api",
+    command: npmCmd,
+    args: ["run", isDev ? "dev:api" : "start:api"],
+    env: {
+      PORT: process.env.PORT || "8081",
+      BRIDGE_URL: process.env.BRIDGE_URL || "http://127.0.0.1:8090"
+    }
+  },
+  {
+    name: "web",
+    command: npmCmd,
+    args: ["run", "start:web"],
+    env: {
+      WEB_PORT: process.env.WEB_PORT || "8080",
+      WEB_HOST: process.env.WEB_HOST || "0.0.0.0"
+    }
+  }
+];
+
+const children = [];
+let shuttingDown = false;
+
+function log(name, message) {
+  process.stdout.write(`[${name}] ${message}`);
+}
+
+for (const svc of services) {
+  const child = spawn(svc.command, svc.args, {
+    stdio: ["inherit", "pipe", "pipe"],
+    env: { ...process.env, ...svc.env }
+  });
+
+  child.stdout.on("data", (chunk) => log(svc.name, chunk.toString()));
+  child.stderr.on("data", (chunk) => log(svc.name, chunk.toString()));
+
+  child.on("exit", (code, signal) => {
+    log(svc.name, `exited code=${String(code)} signal=${String(signal)}\n`);
+    if (!shuttingDown) {
+      shuttingDown = true;
+      for (const other of children) {
+        if (other.pid && other.pid !== child.pid) {
+          other.kill("SIGTERM");
+        }
+      }
+      process.exitCode = Number(code || 1);
+    }
+  });
+
+  children.push(child);
+}
+
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  for (const child of children) {
+    if (child.pid) {
+      child.kill("SIGTERM");
+    }
+  }
+  setTimeout(() => process.exit(0), 300);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

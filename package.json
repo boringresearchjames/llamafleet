@@ -7,9 +7,15 @@
     "apps/host-bridge"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace @lmlaunch/api",
+    "dev": "node scripts/run-native.mjs --dev",
+    "dev:native": "node scripts/run-native.mjs --dev",
     "dev:api": "npm run dev --workspace @lmlaunch/api",
     "dev:bridge": "npm run dev --workspace @lmlaunch/host-bridge",
-    "start": "npm run start --workspace @lmlaunch/api"
+    "dev:web": "node apps/web/server.js",
+    "start": "node scripts/run-native.mjs",
+    "start:native": "node scripts/run-native.mjs",
+    "start:api": "npm run start --workspace @lmlaunch/api",
+    "start:bridge": "npm run start --workspace @lmlaunch/host-bridge",
+    "start:web": "node apps/web/server.js"
   }
 }

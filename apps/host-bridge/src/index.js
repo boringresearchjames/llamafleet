@@ -18,7 +18,7 @@ if (!bridgeAuthEnabled) {
   console.warn("Bridge auth disabled: BRIDGE_AUTH_TOKEN not set.");
 }
 
-const dataRoot = "/data";
+const dataRoot = process.env.DATA_ROOT || path.resolve(process.cwd(), "data");
 const logsDir = path.join(dataRoot, "logs");
 fs.mkdirSync(logsDir, { recursive: true });
 
@@ -157,21 +157,21 @@ function gpuRuntimeDiagnostics(detail) {
         expected: "Lists GPU devices on host"
       },
       {
-        name: "Container NVIDIA runtime",
-        command: "docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi",
-        expected: "Runs nvidia-smi in a test container"
+        name: "LM Studio CLI availability",
+        command: "lms --version",
+        expected: "Confirms LM Studio CLI is installed on host"
       },
       {
-        name: "Bridge container GPU access",
-        command: "docker compose exec -T bridge sh -lc \"nvidia-smi -L\"",
-        expected: "Lists GPUs from bridge container"
+        name: "Bridge service user PATH",
+        command: "which nvidia-smi",
+        expected: "Bridge process user can resolve nvidia-smi"
       }
     ],
     instructions: [
       "Install/update NVIDIA GPU driver on the server and verify host nvidia-smi works.",
-      "Install NVIDIA Container Toolkit and restart Docker daemon.",
-      "Configure compose runtime for bridge service with GPU access (gpus: all or device_requests).",
-      "Rebuild and restart: docker compose down --remove-orphans && docker compose up -d --build bridge api web"
+      "Ensure nvidia-smi is on PATH for the service account running LM Launch.",
+      "If running under systemd, define Environment=PATH=... including NVIDIA binary location.",
+      "Restart services after changes: bridge, api, then web."
     ],
     detail: String(detail || "nvidia-smi not found")
   };
@@ -217,7 +217,7 @@ app.get("/v1/gpus", (_req, res) => {
         data,
         diagnostics: {
           runtimeDetected: true,
-          detail: "nvidia-smi is available in bridge container"
+          detail: "nvidia-smi is available to the bridge service"
         }
       });
     }
