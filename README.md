@@ -1,8 +1,21 @@
 # LM Launch
 
-LM Launch is a Node.js control plane and dashboard for running multiple headless LM Studio instances in parallel on a single host.
+**Run multiple LM Studio instances in parallel, each pinned to its own GPUs, from one browser dashboard.**
 
-This repo runs as a host-native Node deployment.
+LM Launch is a lightweight Node.js control plane and operator dashboard for multi-instance LM Studio deployments. It lets you partition a multi-GPU machine — assigning specific GPUs to specific models — and manage the full lifecycle of each instance (launch, reload, drain, restart, remove) from a single browser UI without touching a terminal.
+
+Each instance runs as an independent headless LM Studio server on its own port, with its own context window, queue limit, TTL, and GPU subset. LM Launch tracks state, catches crashes, and auto-restarts instances with configurable backoff. Config profiles let you save and relaunch common setups in one click.
+
+**Key capabilities:**
+- Per-instance GPU pinning via `CUDA_VISIBLE_DEVICES` and equivalent env vars for AMD/Intel/Metal
+- Headless LM Studio server management (start, stop, reload, drain, force-stop)
+- GPU bleed detection via pre/post memory snapshots
+- Auto-restart with backoff on unclean exits
+- Config profiles — save a model + GPU + context + TTL combination and relaunch in one click
+- Unified API endpoint per instance, copyable from the dashboard
+- Token-authenticated API and bridge layers for deployment behind a reverse proxy
+
+LM Launch uses GGUF models through LM Studio's llama.cpp backend, so it works on NVIDIA (including older pre-Ampere cards), AMD, Apple Silicon, and CPU — no CUDA toolkit required.
 
 ## Dashboard
 
