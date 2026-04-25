@@ -3,9 +3,14 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import yaml from "js-yaml";
+import { fileURLToPath } from "url";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const webRoot = path.resolve(__dirname, "..", "..", "web");
 
 const corsOrigin = process.env.CORS_ORIGIN || "*";
 const corsHeaders = "Authorization, Content-Type, X-Bridge-Token";
@@ -42,6 +47,7 @@ fs.mkdirSync(stateDir, { recursive: true });
 
 const defaultState = {
   profiles: [],
+  instanceConfigs: [],
   instances: [],
   audit: [],
   settings: {
@@ -71,6 +77,7 @@ const defaultState = {
 function migrateState(raw) {
   const next = raw || {};
   next.profiles = Array.isArray(next.profiles) ? next.profiles : [];
+  next.instanceConfigs = Array.isArray(next.instanceConfigs) ? next.instanceConfigs : [];
   next.instances = Array.isArray(next.instances) ? next.instances : [];
   next.audit = Array.isArray(next.audit) ? next.audit : [];
   next.settings = next.settings || {};
@@ -126,6 +133,76 @@ function toSharedConfig(state) {
       username: u.username,
       disabled: Boolean(u.disabled)
     }))
+  };
+}
+
+function cleanRuntime(runtime) {
+  return {
+    target: "lms",
+    mode: "server",
+    serverArgs: Array.isArray(runtime?.serverArgs) && runtime.serverArgs.length > 0
+      ? runtime.serverArgs.map((x) => String(x))
+      : ["server", "start", "--port", "{port}"],
+    hardware: normalizeRuntimeBackend(runtime?.hardware || "auto"),
+    selection: runtime?.selection ? String(runtime.selection) : null,
+    label: runtime?.label ? String(runtime.label) : null
+  };
+}
+
+function currentInstanceTemplates() {
+  return (state.instances || []).map((inst) => ({
+    name: String(inst.profileName || inst.id || "instance").trim() || "instance",
+    host: String(inst.host || "127.0.0.1"),
+    port: Number(inst.port || 1234),
+    model: String(inst.effectiveModel || inst.pendingModel || "").trim(),
+    gpus: Array.isArray(inst.gpus) ? inst.gpus.map((g) => String(g)) : [],
+    runtime: cleanRuntime(inst.runtime),
+    contextLength: parseContextLength(inst.contextLength),
+    maxInflightRequests: Number(inst.maxInflightRequests || 4)
+  }));
+}
+
+function sanitizeInstanceConfigPayload(raw = {}) {
+  const id = String(raw.id || `cfg_${Date.now()}`).trim();
+  const name = String(raw.name || "Untitled Config").trim() || "Untitled Config";
+  const instances = Array.isArray(raw.instances) ? raw.instances : [];
+
+  const cleaned = instances
+    .map((inst, index) => {
+      const model = String(inst?.model || "").trim();
+      const port = Number(inst?.port);
+      if (!model || !Number.isInteger(port) || port < 1 || port > 65535) {
+        return null;
+      }
+
+      return {
+        name: String(inst?.name || `instance-${index + 1}`).trim() || `instance-${index + 1}`,
+        host: String(inst?.host || "127.0.0.1"),
+        port,
+        model,
+        gpus: Array.isArray(inst?.gpus) ? inst.gpus.map((g) => String(g)) : [],
+        runtime: cleanRuntime(inst?.runtime),
+        contextLength: parseContextLength(inst?.contextLength),
+        maxInflightRequests: Number(inst?.maxInflightRequests || 4)
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    id,
+    name,
+    instances: cleaned
+  };
+}
+
+function toInstanceConfigYamlDoc(config) {
+  return {
+    version: "1",
+    kind: "lmlaunch-instance-config",
+    generatedAt: now(),
+    id: config.id,
+    name: config.name,
+    instances: config.instances
   };
 }
 
@@ -241,6 +318,69 @@ let state = loadState();
 
 function now() {
   return new Date().toISOString();
+}
+
+function parseRuntimeArgs(value) {
+  if (Array.isArray(value)) {
+    return value.map((x) => String(x).trim()).filter(Boolean);
+  }
+
+  const text = String(value || "").trim();
+  if (!text) {
+    return ["server", "start", "--port", "{port}"];
+  }
+
+  const matches = text.match(/"([^"\\]*(\\.[^"\\]*)*)"|'([^'\\]*(\\.[^'\\]*)*)'|\S+/g) || [];
+  return matches
+    .map((token) => token.replace(/^['"]|['"]$/g, "").trim())
+    .filter(Boolean);
+}
+
+function parseContextLength(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && value.trim().toLowerCase() === "auto") return null;
+  const num = Number(value);
+  if (!Number.isInteger(num) || num < 256) return null;
+  return num;
+}
+
+function normalizeRuntimeBackend(value) {
+  const raw = String(value || "auto").trim().toLowerCase();
+  if (raw === "valkun") return "vulkan";
+  if (["auto", "cuda", "cpu", "vulkan"].includes(raw)) return raw;
+  return "auto";
+}
+
+function toInstanceId(value) {
+  const text = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "");
+  return text || `inst_${Date.now()}`;
+}
+
+function nextUniqueInstanceId(baseId, existingIds = new Set()) {
+  if (!existingIds.has(baseId)) {
+    return baseId;
+  }
+  let suffix = 2;
+  while (existingIds.has(`${baseId}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${baseId}-${suffix}`;
+}
+
+function backendFromRuntimeSelection(value) {
+  const raw = String(value || "").toLowerCase();
+  if (!raw) return null;
+  if (raw.includes(":cuda") || raw.includes("cuda")) return "cuda";
+  if (raw.includes(":vulkan") || raw.includes("vulkan") || raw.includes("valkun")) return "vulkan";
+  if (raw.includes(":cpu") || raw.includes("cpu")) return "cpu";
+  if (raw.includes(":auto") || raw.includes("auto")) return "auto";
+  return null;
 }
 
 function getBearerToken(req) {
@@ -363,24 +503,16 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "api", at: now() });
 });
 
-app.get("/", (_req, res) => {
-  res.json({
-    name: "lmlaunch-api",
-    status: "ok",
-    docs: {
-      help: "/help",
-      health: "/health",
-      capabilities: "/v1/agent/capabilities"
-    }
-  });
-});
-
 app.get("/help", (_req, res) => {
   const readmeUrl =
     process.env.HELP_README_URL ||
     "https://github.com/boringresearchjames/lmlaunch/blob/main/README.md";
   res.redirect(302, readmeUrl);
 });
+
+if (fs.existsSync(webRoot)) {
+  app.use(express.static(webRoot));
+}
 
 app.post("/auth/login", (req, res) => {
   if (!state.settings.security.auth.enabled) {
@@ -429,6 +561,175 @@ app.get("/v1/settings/security", requireAdminToken, (_req, res) => {
 
 app.get("/v1/config/export.yaml", requireAdminToken, (_req, res) => {
   const doc = yaml.dump(toSharedConfig(state), { noRefs: true, lineWidth: 120 });
+  res.setHeader("content-type", "application/yaml");
+  res.send(doc);
+});
+
+app.get("/v1/instance-configs", (req, res) => {
+  const data = (state.instanceConfigs || []).map((cfg) => ({
+    id: cfg.id,
+    name: cfg.name,
+    instanceCount: Array.isArray(cfg.instances) ? cfg.instances.length : 0,
+    createdAt: cfg.createdAt,
+    updatedAt: cfg.updatedAt
+  }));
+  res.json({ data });
+});
+
+app.get("/v1/instance-configs/:id", (req, res) => {
+  const config = (state.instanceConfigs || []).find((x) => x.id === req.params.id);
+  if (!config) return res.status(404).json({ error: "instance config not found" });
+  res.json(config);
+});
+
+app.post("/v1/instance-configs", (req, res) => {
+  const payload = sanitizeInstanceConfigPayload(req.body || {});
+  if (payload.instances.length === 0) {
+    return res.status(400).json({ error: "config must contain at least one valid instance" });
+  }
+
+  const nowTs = now();
+  const existingIndex = state.instanceConfigs.findIndex((x) => x.id === payload.id);
+  const next = {
+    ...payload,
+    createdAt: existingIndex >= 0 ? state.instanceConfigs[existingIndex].createdAt : nowTs,
+    updatedAt: nowTs
+  };
+
+  if (existingIndex >= 0) {
+    state.instanceConfigs[existingIndex] = next;
+  } else {
+    state.instanceConfigs.unshift(next);
+  }
+
+  saveState(state);
+  audit("instance_config.save", { id: next.id, name: next.name, instances: next.instances.length });
+  return res.status(201).json(next);
+});
+
+app.post("/v1/instance-configs/save-current", (req, res) => {
+  const name = String(req.body?.name || "").trim() || `Config ${new Date().toLocaleString()}`;
+  const id = String(req.body?.id || `cfg_${Date.now()}`).trim();
+  const instances = currentInstanceTemplates();
+
+  if (instances.length === 0) {
+    return res.status(400).json({ error: "no instances available to save" });
+  }
+
+  const nowTs = now();
+  const existingIndex = state.instanceConfigs.findIndex((x) => x.id === id);
+  const next = {
+    id,
+    name,
+    instances,
+    createdAt: existingIndex >= 0 ? state.instanceConfigs[existingIndex].createdAt : nowTs,
+    updatedAt: nowTs
+  };
+
+  if (existingIndex >= 0) {
+    state.instanceConfigs[existingIndex] = next;
+  } else {
+    state.instanceConfigs.unshift(next);
+  }
+
+  saveState(state);
+  audit("instance_config.save_current", { id: next.id, name: next.name, instances: next.instances.length });
+  return res.status(201).json(next);
+});
+
+app.delete("/v1/instance-configs/:id", (req, res) => {
+  const before = state.instanceConfigs.length;
+  state.instanceConfigs = state.instanceConfigs.filter((x) => x.id !== req.params.id);
+  if (state.instanceConfigs.length === before) {
+    return res.status(404).json({ error: "instance config not found" });
+  }
+  saveState(state);
+  audit("instance_config.delete", { id: req.params.id });
+  return res.json({ success: true });
+});
+
+app.post("/v1/instance-configs/:id/load", async (req, res) => {
+  const config = state.instanceConfigs.find((x) => x.id === req.params.id);
+  if (!config) return res.status(404).json({ error: "instance config not found" });
+
+  const replaceExisting = req.body?.replaceExisting !== false;
+  const started = [];
+  const failed = [];
+  const reservedIds = new Set(state.instances.map((x) => String(x.id)));
+
+  if (replaceExisting) {
+    for (const inst of [...state.instances]) {
+      if (inst.state !== "stopped") {
+        try {
+          await bridgeFetch("POST", `/v1/instances/${inst.id}/kill`, { reason: "load_config_replace" });
+        } catch {
+          // Continue best effort.
+        }
+      }
+    }
+    state.instances = [];
+    saveState(state);
+  }
+
+  for (let i = 0; i < config.instances.length; i += 1) {
+    const item = config.instances[i];
+    try {
+      const requestedInstanceId = nextUniqueInstanceId(toInstanceId(item.name), reservedIds);
+      reservedIds.add(requestedInstanceId);
+      const payload = {
+        name: item.name,
+        host: item.host,
+        port: item.port,
+        model: item.model,
+        gpus: Array.isArray(item.gpus) ? item.gpus : [],
+        maxInflightRequests: Number(item.maxInflightRequests || 4),
+        runtimeBackend: item.runtime?.hardware || "auto",
+        runtimeSelection: item.runtime?.selection || "",
+        runtimeLabel: item.runtime?.label || "",
+        runtimeArgs: item.runtime?.serverArgs || ["server", "start", "--port", "{port}"],
+        contextLength: item.contextLength ?? "auto",
+        instanceId: requestedInstanceId
+      };
+
+      const startedInstance = await localApi("POST", "/v1/instances/start", payload);
+      started.push({ name: item.name, instanceId: startedInstance.id, port: startedInstance.port });
+    } catch (error) {
+      failed.push({ name: item.name, error: String(error.message || error) });
+    }
+  }
+
+  audit("instance_config.load", {
+    id: config.id,
+    started: started.length,
+    failed: failed.length,
+    replaceExisting
+  });
+
+  return res.json({
+    success: true,
+    configId: config.id,
+    configName: config.name,
+    replaceExisting,
+    started,
+    failed
+  });
+});
+
+app.get("/v1/instance-configs/current/export.yaml", (req, res) => {
+  const current = {
+    id: "current",
+    name: "Current Instances",
+    instances: currentInstanceTemplates()
+  };
+  const doc = yaml.dump(toInstanceConfigYamlDoc(current), { noRefs: true, lineWidth: 120 });
+  res.setHeader("content-type", "application/yaml");
+  res.send(doc);
+});
+
+app.get("/v1/instance-configs/:id/export.yaml", (req, res) => {
+  const config = state.instanceConfigs.find((x) => x.id === req.params.id);
+  if (!config) return res.status(404).json({ error: "instance config not found" });
+  const doc = yaml.dump(toInstanceConfigYamlDoc(config), { noRefs: true, lineWidth: 120 });
   res.setHeader("content-type", "application/yaml");
   res.send(doc);
 });
@@ -666,16 +967,36 @@ app.delete("/v1/profiles/:id", (req, res) => {
 });
 
 app.get("/v1/instances", async (_req, res) => {
+  let gpuData = [];
   try {
     const bridgeState = await bridgeFetch("GET", "/v1/instances");
+    const gpus = await bridgeFetch("GET", "/v1/gpus");
+    gpuData = Array.isArray(gpus?.data) ? gpus.data : [];
+
+    const gpuById = new Map(gpuData.map((gpu) => [String(gpu.id), gpu]));
     state.instances = state.instances.map((inst) => {
       const runtime = bridgeState.data.find((x) => x.instanceId === inst.id);
+      const assignedGpus = Array.isArray(inst.gpus) ? inst.gpus.map((g) => String(g)) : [];
+      const gpuStats = assignedGpus
+        .map((id) => gpuById.get(id))
+        .filter(Boolean)
+        .map((gpu) => ({
+          id: String(gpu.id),
+          name: gpu.name,
+          memory_total_mib: gpu.memory_total_mib,
+          memory_used_mib: gpu.memory_used_mib,
+          utilization_percent: gpu.utilization_percent,
+          temperature_c: gpu.temperature_c ?? null,
+          graphics_clock_mhz: gpu.graphics_clock_mhz ?? null,
+          memory_clock_mhz: gpu.memory_clock_mhz ?? null
+        }));
       return {
         ...inst,
         pid: runtime?.pid || null,
-        state: runtime?.state || inst.state,
+        state: runtime?.state || "stopped",
         inflightRequests: runtime?.inflightRequests ?? inst.inflightRequests ?? 0,
         queueDepth: runtime?.queueDepth ?? inst.queueDepth ?? 0,
+        gpuStats,
         updatedAt: now()
       };
     });
@@ -684,59 +1005,158 @@ app.get("/v1/instances", async (_req, res) => {
     // Keep last-known state if bridge is unavailable.
   }
 
-  res.json({ data: state.instances });
+  res.json({ data: state.instances, gpus: gpuData });
 });
 
 app.post("/v1/instances/start", async (req, res) => {
-  const profileRef = String(req.body?.profileId || "").trim();
-  const profile = state.profiles.find((p) => p.id === profileRef || p.name === profileRef);
-  if (!profile) {
-    return res.status(404).json({ error: "profile not found (id or name)" });
-  }
-
-  const instanceId = req.body?.instanceId || `inst_${Date.now()}`;
+  const name = String(req.body?.name || "").trim();
+  const launchHost = String(req.body?.host || "127.0.0.1").trim() || "127.0.0.1";
+  const launchPort = Number(req.body?.port);
+  const requestedId = String(req.body?.instanceId || "").trim();
   const modelToUse = String(req.body?.model || "").trim();
+  const runtimeArgs = parseRuntimeArgs(req.body?.runtimeArgs);
+  const contextLength = parseContextLength(req.body?.contextLength);
+  const runtimeSelection = String(req.body?.runtimeSelection || "").trim();
+  const runtimeLabel = String(req.body?.runtimeLabel || "").trim();
+  const selectionBackend = backendFromRuntimeSelection(runtimeSelection);
+  const runtimeBackend = normalizeRuntimeBackend(req.body?.runtimeBackend || selectionBackend || "auto");
+  const launchGpus = Array.isArray(req.body?.gpus)
+    ? req.body.gpus.map((g) => String(g))
+      : [];
   const maxInflightRequests = Number(req.body?.maxInflightRequests || 4);
+  if (!name) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  if (!Number.isInteger(launchPort) || launchPort < 1 || launchPort > 65535) {
+    return res.status(400).json({ error: "valid port is required" });
+  }
   if (!modelToUse) {
     return res.status(400).json({ error: "model is required" });
   }
+
+  const usedIds = new Set(state.instances.map((x) => String(x.id)));
+  const baseId = requestedId || toInstanceId(name);
+  const instanceId = nextUniqueInstanceId(baseId, usedIds);
+
+  const activeInstances = state.instances.filter((x) => x.state !== "stopped");
+  const portConflict = activeInstances.find(
+    (x) => Number(x.port) === launchPort && String(x.host || "127.0.0.1") === launchHost
+  );
+  if (portConflict) {
+    return res.status(409).json({
+      error: "port already in use by running instance",
+      port: launchPort,
+      instanceId: portConflict.id
+    });
+  }
+
+  const usesGpu = runtimeBackend !== "cpu";
+  if (usesGpu) {
+    const occupiedGpus = new Set(
+      activeInstances
+        .filter((x) => normalizeRuntimeBackend(x?.runtime?.hardware) !== "cpu")
+        .flatMap((x) => (Array.isArray(x.gpus) ? x.gpus.map((g) => String(g)) : []))
+    );
+    const duplicateGpus = launchGpus.filter((g) => occupiedGpus.has(String(g)));
+    if (duplicateGpus.length > 0) {
+      return res.status(409).json({
+        error: "gpu already assigned to running instance",
+        gpus: [...new Set(duplicateGpus)]
+      });
+    }
+  }
+
+  const profile = {
+    id: null,
+    name,
+    runtime: {
+      target: "lms",
+      mode: "server",
+      serverArgs: runtimeArgs,
+      hardware: runtimeBackend,
+      selection: runtimeSelection || null,
+      label: runtimeLabel || null
+    },
+    host: launchHost,
+    port: launchPort,
+    gpus: usesGpu ? launchGpus : [],
+    contextLength,
+    startupTimeoutMs: 180000,
+    queueLimit: 64
+  };
   
   const existing = state.instances.find((x) => x.id === instanceId);
   if (existing && existing.state !== "stopped") {
     return res.status(409).json({ error: "instance already exists and is not stopped" });
   }
 
-  try {
-    const launch = await bridgeFetch("POST", "/v1/instances/start", {
-      instanceId,
-      profile: {
-        ...profile,
-        model: modelToUse,
-        maxInflightRequests
-      }
-    });
+  const provisional = {
+    id: instanceId,
+    profileId: null,
+    profileName: name,
+    effectiveModel: modelToUse,
+    pendingModel: null,
+    host: launchHost,
+    port: launchPort,
+    state: "starting",
+    pid: null,
+    gpus: usesGpu ? launchGpus : [],
+    runtime: {
+      target: "lms",
+      mode: "server",
+      serverArgs: runtimeArgs,
+      hardware: runtimeBackend,
+      selection: runtimeSelection || null,
+      label: runtimeLabel || null
+    },
+    contextLength,
+    maxInflightRequests,
+    inflightRequests: 0,
+    queueDepth: 0,
+    drain: false,
+    lastHealthOkAt: null,
+    lastError: null,
+    gpuStats: [],
+    startedAt: now(),
+    updatedAt: now()
+  };
 
+  if (existing) {
+    const idx = state.instances.findIndex((x) => x.id === instanceId);
+    state.instances[idx] = provisional;
+  } else {
+    state.instances.push(provisional);
+  }
+  saveState(state);
+
+    const idx = state.instances.findIndex((x) => x.id === instanceId);
     const instance = {
-      id: instanceId,
-      profileId: profile.id,
-      profileName: profile.name,
-      effectiveModel: modelToUse,
-      pendingModel: null,
-      host: profile.host || "127.0.0.1",
-      port: profile.port,
+      ...(idx >= 0 ? state.instances[idx] : provisional),
       state: launch.state || "starting",
       pid: launch.pid || null,
-      gpus: profile.gpus,
-      maxInflightRequests,
-      inflightRequests: 0,
-      queueDepth: 0,
-      drain: false,
-      lastHealthOkAt: null,
       lastError: null,
+      updatedAt: now()
+    };
+    if (idx >= 0) {
+      state.instances[idx] = instance;
+    } else {
+      state.instances.push(instance);
+    }
+      gpuStats: [],
       startedAt: now(),
       updatedAt: now()
     };
 
+    const idx = state.instances.findIndex((x) => x.id === instanceId);
+    if (idx >= 0) {
+      state.instances[idx] = {
+        ...state.instances[idx],
+        state: "stopped",
+        lastError: String(error.message || error),
+        updatedAt: now()
+      };
+      saveState(state);
+    }
     if (existing) {
       const idx = state.instances.findIndex((x) => x.id === instanceId);
       state.instances[idx] = instance;
@@ -745,7 +1165,7 @@ app.post("/v1/instances/start", async (req, res) => {
     }
 
     saveState(state);
-    audit("instance.start", { instanceId, profileId: profile.id });
+    audit("instance.start", { instanceId, profileName: name, port: launchPort });
     res.status(201).json(instance);
   } catch (error) {
     res.status(502).json({ error: String(error.message || error) });
@@ -784,6 +1204,24 @@ app.post("/v1/instances/:id/kill", async (req, res) => {
   }
 });
 
+app.delete("/v1/instances/:id", async (req, res) => {
+  const instance = state.instances.find((x) => x.id === req.params.id);
+  if (!instance) return res.status(404).json({ error: "instance not found" });
+
+  if (instance.state !== "stopped") {
+    try {
+      await bridgeFetch("POST", `/v1/instances/${instance.id}/kill`);
+    } catch {
+      // Continue deleting local record even if runtime cleanup fails.
+    }
+  }
+
+  state.instances = state.instances.filter((x) => x.id !== req.params.id);
+  saveState(state);
+  audit("instance.delete", { instanceId: req.params.id });
+  return res.json({ success: true, deleted: req.params.id });
+});
+
 app.post("/v1/instances/:id/drain", async (req, res) => {
   const instance = state.instances.find((x) => x.id === req.params.id);
   if (!instance) return res.status(404).json({ error: "instance not found" });
@@ -811,8 +1249,22 @@ app.post("/v1/instances/:id/model", (req, res) => {
   const applyMode = req.body?.applyMode || "next_restart";
   if (!model) return res.status(400).json({ error: "model is required" });
 
-  const profile = state.profiles.find((p) => p.id === instance.profileId);
-  if (!profile) return res.status(404).json({ error: "profile not found for instance" });
+  const savedProfile = state.profiles.find((p) => p.id === instance.profileId);
+  const profile =
+    savedProfile ||
+    {
+      id: null,
+      name: instance.profileName || instance.id,
+      runtime: instance.runtime || {
+        target: "lms",
+        mode: "server",
+        serverArgs: ["server", "start", "--port", "{port}"]
+      },
+      host: instance.host || "127.0.0.1",
+      port: instance.port,
+      gpus: Array.isArray(instance.gpus) ? instance.gpus : [],
+      contextLength: parseContextLength(instance.contextLength)
+    };
 
   const applySwitch = async () => {
     if (applyMode === "restart_now") {
@@ -1117,6 +1569,18 @@ app.get("/v1/system/gpus", requireAdminToken, async (req, res) => {
   }
 });
 
+app.get("/v1/system/runtime-backends", requireAdminToken, async (_req, res) => {
+  try {
+    const data = await bridgeFetch("GET", "/v1/runtime/backends");
+    res.json(data);
+  } catch (error) {
+    res.status(503).json({
+      error: "runtime backend detection failed",
+      message: String(error.message || error)
+    });
+  }
+});
+
 app.listen(port, () => {
-  console.log(`lmlaunch api listening on ${port}`);
+  console.log(`lmlaunch api+web listening on ${port}`);
 });

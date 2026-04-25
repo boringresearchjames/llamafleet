@@ -21,55 +21,15 @@
       <div class="brand-block">
         <span class="badge">Multi-Instance Orchestrator</span>
         <h1>LM Launch</h1>
-        <p>Docker-first launcher for parallel LM Studio workloads. Manage instances, models, and runtimes from one dashboard.</p>
+        <p>Node-native launcher for parallel LM Studio workloads. Manage instances, models, and runtimes from one dashboard.</p>
       </div>
-      <div class="status-chip">independent launcher • works with lm studio</div>
+      <div class="topbar-actions">
+        <button id="openHelp" class="help-icon" type="button" aria-label="Open help" title="Open help">?</button>
+        <div class="status-chip">independent launcher • works with lm studio</div>
+      </div>
     </header>
 
     <main class="layout">
-      <section class="card span-4">
-        <h2>API Settings</h2>
-        <p class="card-subtitle">Connect dashboard controls to your launcher API.</p>
-        <div class="row">
-          <label>API Base URL</label>
-          <input id="apiBase" value="http://localhost:8081" />
-        </div>
-        <div class="row">
-          <label>Bearer Token</label>
-          <input id="apiToken" type="password" value="change-me" />
-        </div>
-        <div class="button-row">
-          <button id="saveApi">Save</button>
-        </div>
-      </section>
-
-      <section class="card span-4">
-        <h2>Help</h2>
-        <p class="card-subtitle">Open project documentation from the API help endpoint.</p>
-        <div class="button-row">
-          <button id="openHelp">Open Help</button>
-        </div>
-      </section>
-
-      <section class="card span-4">
-        <h2>Create Profile</h2>
-        <p class="card-subtitle">Runtime defaults only. Profile ID is auto-generated from name.</p>
-        <div class="grid">
-          <label>Profile Name<input id="profileName" placeholder="Qwen Orchestrator" /></label>
-          <label>Host<input id="profileHost" value="127.0.0.1" /></label>
-          <label>Port<input id="profilePort" type="number" value="1234" /></label>
-          <label>GPUs (optional)
-            <div style="display: flex; gap: 8px; align-items: flex-start;">
-              <select id="profileGpus" multiple style="flex: 1; min-height: 80px;"></select>
-              <button type="button" id="loadGpusBtn" style="white-space: nowrap;">Load</button>
-            </div>
-          </label>
-        </div>
-        <div class="button-row">
-          <button id="upsertProfile">Save Profile</button>
-        </div>
-      </section>
-
       <section class="card span-12">
         <div class="section-header">
           <div>
@@ -79,31 +39,59 @@
           <button id="refreshInstances">Refresh</button>
         </div>
 
-        <div style="background: rgba(13, 19, 35, 0.5); padding: 12px; border-radius: 6px; margin-bottom: 12px; border: 1px solid rgba(92, 165, 255, 0.2);">
-          <h3 style="margin: 0 0 10px 0; font-size: 13px; color: rgba(255,255,255,0.75);">Launch New Instance</h3>
-          <div style="display: grid; grid-template-columns: 1.2fr 1fr 1.3fr 1fr auto; gap: 8px; align-items: end;">
-            <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px;">
-              Profile (id or name)
-              <input id="launchProfileId" placeholder="Qwen Orchestrator" style="padding: 6px; font-size: 12px;" />
+        <div class="launch-box">
+          <h3 class="launch-title">Launch New Instance</h3>
+          <div id="launchStatus" class="launch-status">Idle</div>
+          <div class="launch-grid">
+            <label class="launch-field">
+              Instance Name
+              <input id="launchName" placeholder="qwen-run-1" class="launch-input" />
             </label>
-            <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px;">
-              Instance ID
-              <input id="launchInstanceId" placeholder="auto" style="padding: 6px; font-size: 12px;" />
+            <label class="launch-field">
+              Port
+              <input id="launchPort" type="number" value="1234" min="1" max="65535" class="launch-input" />
             </label>
-            <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px;">
+            <label class="launch-field launch-field-span-2">
               Model
-              <div style="display: flex; gap: 6px;">
-                <select id="launchInstanceModel" style="flex: 1; padding: 6px; font-size: 12px;">
-                  <option value="">-- Select model --</option>
-                </select>
-                <button type="button" id="loadLaunchModelsBtn" style="white-space: nowrap;">Load</button>
-              </div>
+              <select id="launchInstanceModel" class="launch-input">
+                <option value="">-- Select model --</option>
+              </select>
             </label>
-            <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px;">
+            <label class="launch-field launch-field-span-2">
+              GPUs
+              <select id="launchGpus" multiple class="launch-input launch-gpu-select">
+              </select>
+            </label>
+            <label class="launch-field">
               Max Inflight
-              <input id="launchInflight" type="number" value="4" min="1" style="padding: 6px; font-size: 12px;" />
+              <input id="launchInflight" type="number" value="4" min="1" class="launch-input" />
             </label>
-            <button id="launchInstance" style="height: 34px;">Start</button>
+            <label class="launch-field launch-field-span-2">
+              Hardware Runtime
+              <select id="launchRuntimeBackend" class="launch-input">
+                <option value="auto">Auto (detecting...)</option>
+              </select>
+              <small id="launchRuntimeDetail" class="launch-field-help">Detecting runtime versions...</small>
+            </label>
+            <label class="launch-field launch-field-span-2">
+              Context Window
+              <select id="launchContextPreset" class="launch-input">
+                <option value="auto" selected>Auto</option>
+                <option value="4096">4096</option>
+                <option value="8192">8192</option>
+                <option value="16384">16384</option>
+                <option value="32768">32768</option>
+                <option value="65536">65536</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <label class="launch-field">
+              Custom Context
+              <input id="launchContextCustom" type="number" min="256" step="256" placeholder="e.g. 24576" class="launch-input" disabled />
+            </label>
+            <div class="launch-actions-row">
+              <button id="launchInstance" class="launch-start">Start</button>
+            </div>
           </div>
         </div>
 
@@ -115,73 +103,60 @@
                 <th>State</th>
                 <th>Model</th>
                 <th>Port</th>
-                <th>URLs</th>
-                <th>Actions</th>
+                <th>GPU</th>
+                <th>Controls</th>
               </tr>
             </thead>
             <tbody id="instanceRows"></tbody>
           </table>
         </div>
-      </section>
 
-      <section class="card span-6">
-        <div class="section-header">
-          <div>
-            <h2>Profiles</h2>
-            <p class="card-subtitle">Saved runtime configurations.</p>
+        <div class="instance-logs-panel">
+          <h3 class="launch-title">Instance Logs</h3>
+          <div class="instance-logs-controls">
+            <label class="launch-field">
+              Instance
+              <select id="logsInstanceSelect" class="launch-input">
+                <option value="">-- Select instance --</option>
+              </select>
+            </label>
+            <label class="launch-field">
+              Lines
+              <input id="logsLines" type="number" value="200" class="launch-input" />
+            </label>
+            <div class="button-row">
+              <button id="refreshLogs">Tail Logs</button>
+              <button id="clearLogs">Clear</button>
+              <button id="copyLogs">Copy</button>
+            </div>
           </div>
-          <button id="refreshProfiles">Refresh</button>
+          <pre id="logsView"></pre>
         </div>
-        <pre id="profilesView"></pre>
       </section>
 
-      <section class="card span-6">
-        <div class="section-header">
-          <div>
-            <h2>Ready Manifest</h2>
-            <p class="card-subtitle">Pool of ready instances for routing.</p>
+      <section class="card span-12">
+        <h2>Config Library</h2>
+        <p class="card-subtitle">Save current instance settings as named configs, load a saved config, or export YAML.</p>
+        <div class="launch-grid">
+          <label class="launch-field launch-field-span-2">
+            Config Name
+            <input id="configName" class="launch-input" placeholder="e.g. Qwen 2x Mix" />
+          </label>
+          <label class="launch-field launch-field-span-2">
+            Saved Configs
+            <select id="savedConfigSelect" class="launch-input">
+              <option value="">-- No saved configs --</option>
+            </select>
+          </label>
+          <div class="launch-actions-row config-actions-row">
+            <button id="saveCurrentConfig">Save Current</button>
+            <button id="loadSelectedConfig">Load Selected</button>
+            <button id="deleteSelectedConfig" class="kill">Delete Selected</button>
+            <button id="exportCurrentConfig">Export Current YAML</button>
+            <button id="exportSelectedConfig">Export Selected YAML</button>
           </div>
-          <button id="refreshManifest">Refresh</button>
         </div>
-        <pre id="manifestView"></pre>
-      </section>
-
-      <section class="card span-5">
-        <h2>Logs</h2>
-        <p class="card-subtitle">Tail instance process output.</p>
-        <div class="row">
-          <label>Instance ID</label>
-          <input id="logsInstanceId" placeholder="inst_qwen_1" />
-        </div>
-        <div class="row">
-          <label>Lines</label>
-          <input id="logsLines" type="number" value="200" />
-        </div>
-        <div class="button-row">
-          <button id="refreshLogs">Tail Logs</button>
-          <button id="clearLogs">Clear</button>
-          <button id="copyLogs">Copy</button>
-        </div>
-        <pre id="logsView"></pre>
-      </section>
-
-      <section class="card span-7">
-        <h2>Config YAML</h2>
-        <p class="card-subtitle">Export, review, and import shareable launcher configuration snapshots.</p>
-        <div class="button-row">
-          <button id="refreshConfigStatus">Refresh Status</button>
-        </div>
-        <pre id="configStatus"></pre>
-        <div class="button-row">
-          <button id="exportYaml">Export YAML</button>
-          <button id="copyYaml">Copy YAML</button>
-          <button id="downloadYaml">Download YAML</button>
-          <button id="importYamlDryRun">Import Dry Run</button>
-          <button id="importYamlApply">Import Apply</button>
-        </div>
-        <label>YAML</label>
-        <textarea id="yamlEditor" rows="14" placeholder="Paste shared-config.yaml content here"></textarea>
-        <pre id="yamlResult"></pre>
+        <pre id="configLibraryResult"></pre>
       </section>
     </main>
 

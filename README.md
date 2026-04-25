@@ -15,9 +15,8 @@ This repo runs as a host-native Node deployment.
 
 ## Architecture (Node Native)
 
-1. API service (`apps/api`) on port `8081`
+1. API + dashboard service (`apps/api`) on port `8081`
 2. Host bridge (`apps/host-bridge`) on port `8090`
-3. Static dashboard server (`apps/web/server.js`) on port `8080`
 
 ## Dependencies
 
@@ -36,8 +35,10 @@ If you want GPU visibility in LM Launch:
 1. Install dependencies:
 
 ```bash
-npm install
+npm run install:native
 ```
+
+If running from an SMB/GVFS mount, this command already disables npm bin symlinks for compatibility.
 
 2. Start all services:
 
@@ -47,7 +48,7 @@ npm run start:native
 
 3. Open dashboard:
 
-- http://localhost:8080
+- http://localhost:8081
 
 4. API endpoint:
 
@@ -66,7 +67,6 @@ Run individual services:
 ```bash
 npm run start:bridge
 npm run start:api
-npm run start:web
 ```
 
 ## Environment Variables
@@ -90,11 +90,6 @@ npm run start:web
 - `READINESS_POLL_MS` (default `2000`)
 - `READINESS_HTTP_TIMEOUT_MS` (default `5000`)
 - `SMOKE_CHECK_ENABLED` (`true` by default)
-
-### Web
-
-- `WEB_HOST` (default `0.0.0.0`)
-- `WEB_PORT` (default `8080`)
 
 ## LM Studio Notes
 

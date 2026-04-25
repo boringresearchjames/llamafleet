@@ -21,15 +21,6 @@ const services = [
       PORT: process.env.PORT || "8081",
       BRIDGE_URL: process.env.BRIDGE_URL || "http://127.0.0.1:8090"
     }
-  },
-  {
-    name: "web",
-    command: npmCmd,
-    args: ["run", "start:web"],
-    env: {
-      WEB_PORT: process.env.WEB_PORT || "8080",
-      WEB_HOST: process.env.WEB_HOST || "0.0.0.0"
-    }
   }
 ];
 
