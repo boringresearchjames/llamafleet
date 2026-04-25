@@ -9,10 +9,11 @@ Each instance runs as an independent headless LM Studio server on its own port, 
 **Key capabilities:**
 - Per-instance GPU pinning via `CUDA_VISIBLE_DEVICES` and equivalent env vars for AMD/Intel/Metal
 - Headless LM Studio server management (start, stop, reload, drain, force-stop)
+- **Built-in per-instance reverse proxy** — all instances bind to `127.0.0.1`; external clients connect through the API proxy endpoint at `http://host:8081/v1/instances/<id>/proxy/v1/...` so you only expose one port
+- Global API key enforcement — a single bearer token gates both the control-plane API and all proxy traffic; disable for open-access internal setups
 - GPU bleed detection via pre/post memory snapshots
 - Auto-restart with backoff on unclean exits
 - Config profiles — save a model + GPU + context + TTL combination and relaunch in one click
-- Unified API endpoint per instance, copyable from the dashboard
 - Token-authenticated API and bridge layers for deployment behind a reverse proxy
 
 LM Launch uses GGUF models through LM Studio's llama.cpp backend, so it works on NVIDIA (including older pre-Ampere cards), AMD, Apple Silicon, and CPU — no CUDA toolkit required.
@@ -86,7 +87,7 @@ Things that are currently out of scope or worth being aware of before adopting:
 - **LM Studio as a dependency** — LM Studio (and its `lms` CLI) must be installed on the host. LM Launch does not manage LM Studio installation or updates.
 - **LM Studio GPU tensor split bug** — As of early 2026, LM Studio has a known issue where some dual-GPU configurations (e.g. 2× RTX PRO 5000 Blackwell) resolve tensor split incorrectly, producing garbage output or crashes. LM Launch assigns GPUs per-instance via environment variables; if LM Studio has a tensor split bug for a given card pairing, that bug will manifest regardless of LM Launch.
 - **No model download management** — LM Launch does not download or manage model files. Models must already be in your LM Studio model library. Use `lms get` or the LM Studio UI to download models.
-- **No authentication per-instance** — The LM Launch API has a single bearer token. Individual instances expose unauthenticated OpenAI-compatible endpoints on their assigned ports. Note: `lms server start` accepts an `--api-key` flag — this could be wired through as an Advanced launch option so LM Studio itself enforces auth on each instance port. Place a reverse proxy in front if you need TLS in the meantime.
+- **No authentication per-instance** — Individual instances are not directly reachable by external clients; they bind to `127.0.0.1` and are accessed exclusively through the LM Launch proxy at `/v1/instances/<id>/proxy/v1/...`. Auth is enforced by the global `API_AUTH_TOKEN` bearer token at the proxy layer. There is no per-instance key.
 - **No speculative decoding or prefix caching** — LM Launch relies on whatever llama.cpp runtime LM Studio provides. Advanced inference features like speculative decoding (draft model + verifier in one pass) or RadixAttention-style prefix caching (reusing KV cache across requests that share a system prompt) are not currently available through this stack. llama.cpp has experimental `--draft-model` support but LM Studio does not expose it via `lms` yet.
 
 ## Planned / TODO
@@ -94,11 +95,31 @@ Things that are currently out of scope or worth being aware of before adopting:
 Roughly prioritized:
 
 - [ ] **Multi-host support** — extend the bridge concept to remote hosts so a single LM Launch API can manage instances across multiple machines. Natural next step for GPU clusters that exceed one box.
-- [ ] **Per-instance API key** — wire `--api-key` through the launch Advanced options so each instance port is protected by LM Studio's own auth. LM Studio supports this natively via `lms server start --api-key`; it just needs to be surfaced in the UI and stored per-instance.
 - [ ] **Prometheus `/metrics` endpoint** — expose per-instance token throughput, queue depth, latency p50/p95, and GPU memory as a Prometheus scrape target. Useful for Grafana dashboards and alerting on unhealthy instances.
 - [ ] **Reverse proxy / load balancer manifest** — emit a ready-made nginx/Caddy/Traefik config or a simple built-in round-robin proxy across healthy instances of the same model, so clients can hit one endpoint and LM Launch routes the request.
 - [ ] **Startup timeout and smoke check config** — currently readiness polling is fixed; expose timeout, retry interval, and expected response schema as per-instance options.
 - [ ] **Save as default template** — let users mark a launch configuration as the default so the form pre-fills on reload.
+
+## Built-in Proxy
+
+Each LM Studio instance launched by LM Launch binds to `127.0.0.1` on its assigned port — it is never directly exposed to the network. Instead, the API serves a built-in OpenAI-compatible reverse proxy for every instance:
+
+```
+http://<host>:8081/v1/instances/<id>/proxy/v1/chat/completions
+http://<host>:8081/v1/instances/<id>/proxy/v1/models
+http://<host>:8081/v1/instances/<id>/proxy/v1/...
+```
+
+**This is the only URL you need to give to clients.** The proxy:
+
+- **Enforces global auth** — if `API_AUTH_TOKEN` is set and "Require API Key" is enabled (configurable from the dashboard topbar), every proxied request must carry `Authorization: Bearer <token>`. Toggle it to "Open" for local/trusted-network use without a key.
+- **Passes through transparently** — JSON, binary, multipart file uploads, streaming responses, arbitrary query strings, and all request headers are forwarded verbatim. The proxy does not re-encode or buffer bodies; non-JSON content-types are forwarded as raw streams.
+- **Tracks activity** — the dashboard shows a live token counter and "Active" state chip updated from the `usage` field of completed responses.
+- **Single port** — expose only port `8081` on your firewall/reverse proxy. No per-instance port management required.
+
+The proxy base URL for each instance is shown in the dashboard under the instance row's "Options" menu ("Proxy Base URL" and "Proxy Chat URL" copy buttons).
+
+---
 
 ## Architecture
 

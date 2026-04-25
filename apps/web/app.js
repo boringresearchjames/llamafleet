@@ -3,6 +3,22 @@ const settings = {
   token: localStorage.getItem("apiToken") || ""
 };
 
+function saveToken(token) {
+  settings.token = String(token || "").trim();
+  if (settings.token) {
+    localStorage.setItem("apiToken", settings.token);
+  } else {
+    localStorage.removeItem("apiToken");
+  }
+}
+
+function syncGlobalApiTokenInput() {
+  const input = $("globalApiToken");
+  if (input) {
+    input.value = settings.token || "";
+  }
+}
+
 let instancesCache = [];
 let gpuTelemetryCache = [];
 let runtimeBackendsCache = [];
@@ -95,19 +111,39 @@ function stateChipHtml(state) {
   return `<span class="state-chip state-${normalized}"><span class="state-dot"></span>${safeText}</span>`;
 }
 
+function formatCompactCount(value) {
+  const num = Math.max(0, Number(value || 0));
+  if (!Number.isFinite(num)) return "0";
+  return Math.round(num).toLocaleString();
+}
+
 function activityChipHtml(inst) {
   const inflight = Math.max(0, Number(inst?.inflightRequests || 0));
   const maxInflight = Math.max(1, Number(inst?.maxInflightRequests || 1));
   const queueDepth = Math.max(0, Number(inst?.queueDepth || 0));
+  const totalCompletionTokens = Math.max(0, Number(inst?.totalCompletionTokens || 0));
+  const totalTokens = Math.max(0, Number(inst?.totalTokens || 0));
+  const lastActivityMs = Date.parse(inst?.lastActivityAt || "");
   const isProcessing = inflight > 0;
-  const statusText = isProcessing ? "Processing" : "Idle";
+  const recentlyActive = !isProcessing
+    && Number.isFinite(lastActivityMs)
+    && (Date.now() - lastActivityMs) <= 45000;
+  const statusText = isProcessing ? "Processing" : (recentlyActive ? "Active" : "Idle");
+  const statusClass = isProcessing ? "processing" : (recentlyActive ? "active" : "idle");
+  const tokenCount = totalCompletionTokens > 0 ? totalCompletionTokens : totalTokens;
+  const tokenText = tokenCount > 0 ? `tok:${formatCompactCount(tokenCount)}` : "";
+  const activityAgoSec = recentlyActive
+    ? Math.max(1, Math.round((Date.now() - lastActivityMs) / 1000))
+    : null;
 
   return `
-    <div class="activity-chip ${isProcessing ? "processing" : "idle"}">
+    <div class="activity-chip ${statusClass}">
       <span class="activity-dot"></span>
       <span>${statusText}</span>
       <span class="activity-count">${inflight}/${maxInflight}</span>
       ${queueDepth > 0 ? `<span class="activity-queue">q:${queueDepth}</span>` : ""}
+      ${tokenText ? `<span class="activity-token">${tokenText}</span>` : ""}
+      ${activityAgoSec !== null ? `<span class="activity-fresh">${activityAgoSec}s</span>` : ""}
     </div>
   `;
 }
@@ -142,9 +178,31 @@ async function api(path, options = {}) {
   return data;
 }
 
+function setGlobalApiStatusLabel(text) {
+  const chip = $("globalApiStatus");
+  if (chip) {
+    chip.textContent = text;
+  }
+}
+
+async function refreshGlobalApiAccess() {
+  const select = $("globalApiMode");
+  if (!select) return;
+
+  try {
+    const security = await api("/v1/settings/security");
+    const requireApiKey = security?.api?.requireApiKey !== false;
+    select.value = requireApiKey ? "require" : "open";
+    setGlobalApiStatusLabel(`API access: ${requireApiKey ? "Require Key" : "Open"}`);
+  } catch (error) {
+    setGlobalApiStatusLabel("API access: unknown");
+  }
+}
+
 function copy(value) {
-  navigator.clipboard.writeText(value);
-  toast(`Copied: ${value}`);
+  navigator.clipboard.writeText(value)
+    .then(() => toast(`Copied: ${value}`))
+    .catch(() => toast("Copy failed — clipboard not available"));
 }
 
 function escapeHtml(value) {
@@ -347,8 +405,11 @@ function applyGpuAvailability() {
     opt.disabled = inUse;
     if (inUse) {
       if (!opt.textContent.includes("(in use)")) {
-        opt.textContent = `${opt.textContent} (in use)`;
+        opt.dataset.cleanLabel = opt.dataset.cleanLabel || opt.textContent;
+        opt.textContent = `${opt.dataset.cleanLabel} (in use)`;
       }
+    } else if (opt.dataset.cleanLabel) {
+      opt.textContent = opt.dataset.cleanLabel;
     }
   });
 }
@@ -361,6 +422,32 @@ $("openHelp").onclick = () => {
   }
   window.open(`${base}/help`, "_blank", "noopener,noreferrer");
 };
+
+$("saveGlobalApi").onclick = async () => {
+  try {
+    saveToken($("globalApiToken").value);
+    const requireApiKey = $("globalApiMode").value === "require";
+    await api("/v1/settings/security", {
+      method: "PUT",
+      body: JSON.stringify({
+        api: {
+          requireApiKey
+        }
+      })
+    });
+    await refreshGlobalApiAccess();
+    toast(`API access updated: ${requireApiKey ? "Require Key" : "Open"}`);
+  } catch (error) {
+    toast(`API access update failed: ${error.message}`);
+  }
+};
+
+$("globalApiToken").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void $("saveGlobalApi").click();
+  }
+});
 
 $("closeAll").onclick = async () => {
   const confirmed = window.confirm("Unload all instances and stop LM Studio server now?");
@@ -537,7 +624,7 @@ $("launchInstance").onclick = async () => {
       name,
       port,
       model,
-      bindHost: String($("launchBindHost").value || "0.0.0.0").trim() || "0.0.0.0",
+      bindHost: "127.0.0.1",
       gpus: selectedGpus,
       maxInflightRequests: Number($("launchInflight").value || 4),
       queueLimit: Number($("launchQueueLimit").value || 64),
@@ -610,11 +697,10 @@ async function refreshInstances() {
       const normalizedState = String(inst.state || "unknown").toLowerCase();
       tr.setAttribute("data-state", normalizedState);
       const baseUrl = String(inst.baseUrl || `http://${inst.host || "127.0.0.1"}:${inst.port}`);
-      const proxyBaseUrl = `${settings.apiBase}/v1/instances/${encodeURIComponent(inst.id)}/proxy`;
+      const proxyBaseUrl = `${settings.apiBase}/v1/instances/${encodeURIComponent(inst.id)}/proxy/v1`;
       const runtimeBackend = normalizeRuntimeBackend(inst.runtime?.hardware || "auto");
       const runtimeLabel = inst.runtime?.label || runtimeBackend;
       const isStopped = String(inst.state || "").toLowerCase() === "stopped";
-      const hasApiKey = Boolean(String(inst.instanceApiKey || "").trim());
       const primaryAction = isStopped
         ? `<button class="delete" data-action="delete" data-id="${inst.id}">Remove</button>`
         : `<button data-action="stop" data-id="${inst.id}">Stop</button>`;
@@ -652,11 +738,9 @@ async function refreshInstances() {
               ${forceStopAction}
               <div class="action-copy-grid">
                 <button class="copy" data-action="copy-base" data-id="${inst.id}" data-copy="${proxyBaseUrl}">Proxy Base URL</button>
-                <button class="copy" data-action="copy-chat" data-id="${inst.id}" data-copy="${proxyBaseUrl}/v1/chat/completions">Proxy Chat URL</button>
+                <button class="copy" data-action="copy-chat" data-id="${inst.id}" data-copy="${proxyBaseUrl}/chat/completions">Proxy Chat URL</button>
               </div>
-              ${hasApiKey ? `<button class="copy" data-action="copy-api-key" data-id="${inst.id}" data-copy="${escapeHtml(inst.instanceApiKey)}">Copy API Key</button>` : ""}
               <button class="copy" data-action="copy-model" data-id="${inst.id}" data-copy="${inst.effectiveModel}">Copy Model ID</button>
-              <button class="copy" data-action="copy-direct" data-id="${inst.id}" data-copy="${baseUrl}/v1/chat/completions">Copy Direct Chat URL</button>
               ${removeSecondaryAction}
             </div>
           </details>
@@ -709,7 +793,7 @@ async function refreshInstances() {
             await api(`/v1/instances/${id}`, {
               method: "DELETE"
             });
-          } else if (action === "copy-base" || action === "copy-chat" || action === "copy-model" || action === "copy-direct" || action === "copy-api-key") {
+          } else if (action === "copy-base" || action === "copy-chat" || action === "copy-model") {
             copy(btn.getAttribute("data-copy") || "");
             return;
           }
@@ -945,6 +1029,8 @@ $("launchInstanceModel").onchange = () => {
   }
 };
 
+syncGlobalApiTokenInput();
+void refreshGlobalApiAccess();
 refreshInstances();
 refreshConfigLibrary();
 loadRuntimeBackends({ silent: true });

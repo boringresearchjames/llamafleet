@@ -467,6 +467,70 @@ async function stopDaemon(reason = "unspecified") {
   console.warn(`LM Studio cleanup (${reason}) daemon down failed: ${clipText(combined, 300)}`);
 }
 
+function isObserverShutdownRequested(text) {
+  const msg = String(text || "").toLowerCase();
+  return msg.includes("system resources observer shutdown requested")
+    || msg.includes("observer shutdown requested");
+}
+
+async function waitForDaemonReady(instanceId = null, reason = "daemon_up") {
+  const timeoutMs = 15000;
+  const startedAt = Date.now();
+  let lastDetail = "";
+
+  while ((Date.now() - startedAt) < timeoutMs) {
+    const probe = await runCommand("lms", ["ps"]);
+    const combined = `${probe.stdout}\n${probe.stderr}\n${probe.error || ""}`;
+    lastDetail = clipText(combined, 220);
+
+    if (probe.ok && !isObserverShutdownRequested(combined)) {
+      return;
+    }
+
+    if (isObserverShutdownRequested(combined) && instanceId) {
+      writeMeta(instanceId, "instance.daemon.wait", {
+        reason,
+        detail: lastDetail
+      });
+    }
+
+    await sleep(400);
+  }
+
+  throw new Error(`LM Studio daemon did not stabilize after ${timeoutMs}ms (${lastDetail || "no detail"})`);
+}
+
+function daemonSettleDelayMs() {
+  const raw = Number(process.env.LM_LAUNCH_DAEMON_SETTLE_MS || "1800");
+  if (!Number.isFinite(raw) || raw < 0) {
+    return 1800;
+  }
+  return Math.min(raw, 10000);
+}
+
+async function recycleDaemonWithEnv(env, instanceId = null, reason = "prelaunch") {
+  try {
+    await runLms(["daemon", "down"], env, {
+      instanceId,
+      label: `lms daemon down (${reason})`
+    });
+  } catch (error) {
+    const text = String(error.message || error).toLowerCase();
+    const benign = text.includes("not running") || text.includes("no running");
+    if (!benign) {
+      throw error;
+    }
+  }
+
+  await runLms(["daemon", "up"], env, {
+    instanceId,
+    label: `lms daemon up (${reason})`
+  });
+
+  await waitForDaemonReady(instanceId, reason);
+  await sleep(daemonSettleDelayMs());
+}
+
 async function stopAllServers(reason = "unspecified", options = {}) {
   const {
     unloadModelsAfterStop = false,
@@ -521,6 +585,8 @@ async function ensureDaemonUp(env, instanceId = null) {
     instanceId,
     label: "lms daemon up"
   });
+
+  await waitForDaemonReady(instanceId, "ensure_daemon_up");
 }
 
 async function ensureServerStart(env, port, instanceId = null) {
@@ -563,11 +629,32 @@ async function ensureModelLoaded(model, env, instanceId = null, options = {}) {
   }
 
   const numaNode = options?.numaNode;
-  await runLms(args, env, {
-    instanceId,
-    label: `lms ${args.join(" ")}`,
-    numaNode
-  });
+  try {
+    await runLms(args, env, {
+      instanceId,
+      label: `lms ${args.join(" ")}`,
+      numaNode
+    });
+  } catch (error) {
+    const message = String(error?.message || error || "");
+    if (!isObserverShutdownRequested(message)) {
+      throw error;
+    }
+
+    if (instanceId) {
+      writeMeta(instanceId, "instance.model.load.retry", {
+        reason: "observer_shutdown_requested",
+        delay_ms: daemonSettleDelayMs()
+      });
+    }
+
+    await sleep(daemonSettleDelayMs());
+    await runLms(args, env, {
+      instanceId,
+      label: `lms ${args.join(" ")} (retry)` ,
+      numaNode
+    });
+  }
 }
 
 async function stopServer(profile, env, instanceId = null) {
@@ -885,7 +972,16 @@ async function launchRuntimeForInstance(instanceId, record, reason = "start") {
     strict_smoke_check: strictSmokeCheck
   });
 
-  await ensureDaemonUp(env, instanceId);
+  const singleInstanceMode = !hasOtherActiveInstances(instanceId);
+  if (runtimeEnv.backend !== "cpu" && selectedGpuIds.length > 0 && singleInstanceMode) {
+    writeMeta(instanceId, "instance.daemon.recycle", {
+      reason: "single_instance_gpu_isolation"
+    });
+    await recycleDaemonWithEnv(env, instanceId, "single_instance_gpu_isolation");
+  } else {
+    await ensureDaemonUp(env, instanceId);
+  }
+
   await ensureServerStartWithArgs(env, runtimeArgs, instanceId, { numaNode });
   await ensureModelLoaded(profile.model, env, instanceId, {
     ttlSeconds: profile.modelTtlSeconds,
@@ -1273,6 +1369,11 @@ app.get("/v1/models", async (req, res) => {
     return res.status(400).json({ error: "invalid port" });
   }
 
+  const allowedHosts = ["127.0.0.1", "localhost", "::1"];
+  if (!allowedHosts.includes(host)) {
+    return res.status(400).json({ error: "invalid host: only loopback addresses are permitted" });
+  }
+
   try {
     const timeout = withTimeout(readinessHttpTimeoutMs);
     const response = await fetch(`http://${host}:${port}/v1/models`, {
@@ -1405,8 +1506,8 @@ app.post("/v1/instances/:id/stop", async (req, res) => {
       } catch (error) {
         stopError = String(error.message || error);
       }
-      record.state = "stopped";
     }
+    record.state = "stopped";
     const unload = await unloadInstanceModel(req.params.id, record.profile?.model, "instance_stop");
     record.restartInFlight = false;
     record.restartAttempts = 0;
