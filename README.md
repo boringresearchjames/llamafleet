@@ -16,7 +16,7 @@ LM Studio's GUI is designed around a single interactive session. You can load mu
 
 ### vs. vLLM
 
-vLLM is excellent for high-throughput serving of a single model on a single node. It does not support running dissimilar models concurrently on different GPU subsets from one control plane, has no built-in multi-instance orchestration UI, and requires Python + CUDA with matching driver versions. LM Launch uses GGUF models via LM Studio's llama.cpp backend, so it runs on any hardware LM Studio supports (NVIDIA, AMD, Apple Silicon, CPU) without a CUDA toolkit dependency.
+vLLM is excellent for high-throughput serving of a single model on a single node. It does not support running dissimilar models concurrently on different GPU subsets from one control plane, has no built-in multi-instance orchestration UI, and requires Python + CUDA with matching driver versions. vLLM also has limited or no support for older NVIDIA GPUs (pre-Ampere cards like V100, GTX 10/20 series often hit capability gaps or produce incorrect results), and its quantization support is narrower — GGUF and many GGUF-based quant formats (IQ2, IQ3, Q4_K_S, etc.) are not natively supported, forcing you toward bitsandbytes or AWQ which have their own hardware and driver constraints. LM Launch uses GGUF models via LM Studio's llama.cpp backend, so it runs on any hardware LM Studio supports (NVIDIA including older cards, AMD, Apple Silicon, CPU) without a CUDA toolkit dependency and with the full range of GGUF quantization formats.
 
 ### vs. multiple llama.cpp processes
 
