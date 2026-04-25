@@ -654,7 +654,44 @@ async function selectRuntime(runtimeId, env, instanceId = null) {
     }
   } catch (error) {
     const errorText = String(error?.message || error);
-    if (isLmsCliPasskeyMismatchError(errorText) || isRuntimeAliasNotFoundError(errorText)) {
+    if (isRuntimeAliasNotFoundError(errorText)) {
+      if (instanceId) {
+        writeMeta(instanceId, "instance.runtime.selection.repair.start", {
+          runtime_id: runtimeIdStr,
+          step: "runtime_get"
+        });
+      }
+      try {
+        await runLms(["runtime", "get", runtimeIdStr], env, {
+          instanceId,
+          label: `lms runtime get ${runtimeIdStr}`
+        });
+        await runLms(["runtime", "select", runtimeIdStr], env, {
+          instanceId,
+          label: `lms runtime select ${runtimeIdStr} (retry)`
+        });
+        if (instanceId) {
+          writeMeta(instanceId, "instance.runtime.selection.repair.success", {
+            runtime_id: runtimeIdStr
+          });
+        }
+        return;
+      } catch (repairError) {
+        const repairText = String(repairError?.message || repairError);
+        if (instanceId) {
+          writeMeta(instanceId, "instance.runtime.selection.repair.failed", {
+            runtime_id: runtimeIdStr,
+            error: repairText
+          });
+        }
+        throw new Error(
+          `Failed to select runtime ${runtimeIdStr}: ${errorText} `
+          + `Also failed to install/select requested runtime via 'lms runtime get': ${repairText}`
+        );
+      }
+    }
+
+    if (isLmsCliPasskeyMismatchError(errorText)) {
       const reason = isLmsCliPasskeyMismatchError(errorText)
         ? "lms_cli_passkey_mismatch"
         : "runtime_alias_not_found";
