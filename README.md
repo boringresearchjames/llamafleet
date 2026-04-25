@@ -4,7 +4,7 @@
 
 LM Launch is a lightweight Node.js control plane and operator dashboard for multi-instance LM Studio deployments. It lets you partition a multi-GPU machine — assigning specific GPUs to specific models — and manage the full lifecycle of each instance (launch, reload, drain, restart, remove) from a single browser UI without touching a terminal.
 
-Each instance runs as an independent headless LM Studio server on its own port, with its own context window, queue limit, TTL, and GPU subset. LM Launch tracks state, catches crashes, and auto-restarts instances with configurable backoff. Config profiles let you save and relaunch common setups in one click.
+Each instance runs as an independent headless LM Studio server on its own port, with its own context window, queue limit, TTL, and GPU subset. LM Launch tracks state, catches crashes, and auto-restarts instances with configurable backoff.
 
 **Key capabilities:**
 - Per-instance GPU pinning via `CUDA_VISIBLE_DEVICES` and equivalent env vars for AMD/Intel/Metal
@@ -77,18 +77,6 @@ LM Launch does not compete with LM Link. The two tools operate at different laye
 
 ---
 
-## What It Does
-
-- Manage runtime profiles (host, port, GPU selection, bind host, context window)
-- Launch/stop/kill/drain LM Studio instances
-- Select model per launched instance with optional TTL and parallel slots
-- Queue limit and max parallel inference requests per instance
-- Auto-restart on failure with configurable retries and exponential backoff
-- Expose ready-only manifest for external routing
-- Show logs and operator actions in a lightweight dashboard
-- Discover models and GPUs through the host bridge
-- Save/load named config profiles for repeatable multi-instance setups
-
 ## Known Limitations and Roadmap Considerations
 
 Things that are currently out of scope or worth being aware of before adopting:
@@ -112,10 +100,14 @@ Roughly prioritized:
 - [ ] **Startup timeout and smoke check config** — currently readiness polling is fixed; expose timeout, retry interval, and expected response schema as per-instance options.
 - [ ] **Save as default template** — let users mark a launch configuration as the default so the form pre-fills on reload.
 
-## Architecture (Node Native)
+## Architecture
 
-1. API + dashboard service (`apps/api`) on port `8081`
-2. Host bridge (`apps/host-bridge`) on port `8090`
+LM Launch is two Node.js services:
+
+- **API + dashboard** (`apps/api`, port `8081`) — serves the browser dashboard and REST API. Owns all state persistence (`state.json`) and config profiles. Communicates with the bridge to issue `lms` commands. Authenticates inbound requests via `API_AUTH_TOKEN`.
+- **Host bridge** (`apps/host-bridge`, port `8090`) — runs natively on the host machine and executes `lms` CLI commands, reads GPU state via `nvidia-smi`, and polls instance readiness. Authenticates requests from the API via `BRIDGE_AUTH_TOKEN`.
+
+The bridge must run natively on the host (it shells out to `lms`). The API can run natively or in Docker as long as it can reach the bridge. The bridge communicates with LM Studio's `lms daemon` to start and stop server processes, and enforces per-instance GPU environment variables before each `lms server start` call.
 
 ## Dependencies
 
@@ -137,7 +129,7 @@ If you want GPU visibility in LM Launch:
 npm run install:native
 ```
 
-If running from an SMB/GVFS mount, this command already disables npm bin symlinks for compatibility.
+> If running from a network share, this command sets `--no-bin-links` automatically to avoid symlink failures.
 
 2. Start all services:
 
@@ -145,13 +137,7 @@ If running from an SMB/GVFS mount, this command already disables npm bin symlink
 npm run start:native
 ```
 
-3. Open dashboard:
-
-- http://localhost:8081
-
-4. API endpoint:
-
-- http://localhost:8081
+3. Open **http://localhost:8081** — dashboard and API are both served from this port.
 
 ## Development
 
@@ -190,17 +176,6 @@ npm run start:api
 - `READINESS_HTTP_TIMEOUT_MS` (default `5000`)
 - `SMOKE_CHECK_ENABLED` (`true` by default)
 
-## LM Studio Notes
-
-Expected host commands:
-
-```bash
-lms daemon up
-lms server start --port 1234
-```
-
-LM Launch starts/stops instances through the bridge service and tracks readiness per instance.
-
 ## GPU Diagnostics
 
 If GPU detection cannot run, `/v1/system/gpus` returns:
@@ -210,11 +185,6 @@ If GPU detection cannot run, `/v1/system/gpus` returns:
 - `diagnostics` with checks and remediation steps
 
 This allows non-GPU dev machines to run cleanly while still giving actionable server diagnostics.
-
-## API Help
-
-- Dashboard Help button opens API `/help`
-- `/help` redirects to this README by default
 
 ## License
 
