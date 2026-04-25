@@ -2,6 +2,8 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import os from "os";
+import { Readable } from "stream";
 import yaml from "js-yaml";
 import { fileURLToPath } from "url";
 
@@ -33,6 +35,7 @@ const stateFile = process.env.STATE_FILE || path.resolve(process.cwd(), "data", 
 const sharedConfigFile = process.env.SHARED_CONFIG_FILE || path.resolve(process.cwd(), "data", "shared-config.yaml");
 const apiAuthEnabled = Boolean(apiToken && apiToken !== "change-me");
 const bridgeAuthEnabled = Boolean(bridgeToken && bridgeToken !== "change-me");
+const publicHostOverride = String(process.env.LM_LAUNCH_PUBLIC_HOST || "").trim();
 
 if (!apiAuthEnabled) {
   console.warn("API auth disabled: API_AUTH_TOKEN not set.");
@@ -156,6 +159,7 @@ function currentInstanceTemplates() {
     bindHost: String(inst.bindHost || "0.0.0.0"),
     port: Number(inst.port || 1234),
     model: String(inst.effectiveModel || inst.pendingModel || "").trim(),
+    instanceApiKey: normalizeInstanceApiKey(inst.instanceApiKey),
     gpus: Array.isArray(inst.gpus) ? inst.gpus.map((g) => String(g)) : [],
     runtime: cleanRuntime(inst.runtime),
     contextLength: parseContextLength(inst.contextLength),
@@ -186,6 +190,7 @@ function sanitizeInstanceConfigPayload(raw = {}) {
         bindHost: parseBindHost(inst?.bindHost),
         port,
         model,
+        instanceApiKey: normalizeInstanceApiKey(inst?.instanceApiKey),
         gpus: Array.isArray(inst?.gpus) ? inst.gpus.map((g) => String(g)) : [],
         runtime: cleanRuntime(inst?.runtime),
         contextLength: parseContextLength(inst?.contextLength),
@@ -375,6 +380,15 @@ function parseBindHost(value) {
   return raw;
 }
 
+function normalizeInstanceApiKey(value) {
+  const raw = String(value || "").trim();
+  return raw || null;
+}
+
+function generateInstanceApiKey() {
+  return crypto.randomBytes(24).toString("base64url");
+}
+
 function parseRestartPolicy(value = {}) {
   const modeRaw = String(value?.mode || value?.restartMode || "never").trim().toLowerCase();
   const mode = modeRaw === "on-failure" ? "on-failure" : "never";
@@ -540,6 +554,73 @@ function audit(action, details = {}) {
 
 function instanceBaseUrl(instance) {
   return `http://${instance.host || "127.0.0.1"}:${instance.port}`;
+}
+
+function detectMachineIpv4() {
+  const interfaces = os.networkInterfaces();
+  for (const entries of Object.values(interfaces)) {
+    for (const item of entries || []) {
+      if (!item) continue;
+      const family = typeof item.family === "string" ? item.family : String(item.family);
+      if (family !== "IPv4") continue;
+      if (item.internal) continue;
+      const addr = String(item.address || "").trim();
+      if (!addr) continue;
+      if (addr.startsWith("169.254.")) continue;
+      return addr;
+    }
+  }
+  return null;
+}
+
+function resolveAdvertisedHost(instance) {
+  const bindHost = String(instance?.bindHost || "0.0.0.0").trim().toLowerCase();
+  const internalHost = String(instance?.host || "127.0.0.1").trim() || "127.0.0.1";
+  const localhostOnly = bindHost === "127.0.0.1" || bindHost === "localhost" || bindHost === "::1";
+  if (localhostOnly) {
+    return internalHost;
+  }
+
+  if (publicHostOverride) {
+    return publicHostOverride;
+  }
+
+  const detected = detectMachineIpv4();
+  return detected || internalHost;
+}
+
+function instancePublicBaseUrl(instance) {
+  return `http://${resolveAdvertisedHost(instance)}:${instance.port}`;
+}
+
+function updateInstanceRequestMetrics(instance, delta = 0) {
+  if (!instance || !Number.isFinite(delta) || delta === 0) return;
+  const current = Number(instance.inflightRequests || 0);
+  const nextInflight = Math.max(0, current + delta);
+  instance.inflightRequests = nextInflight;
+
+  const maxInflight = Math.max(1, Number(instance.maxInflightRequests || 1));
+  instance.queueDepth = Math.max(0, nextInflight - maxInflight);
+  instance.updatedAt = now();
+}
+
+function copyProxyResponseHeaders(upstreamHeaders, res) {
+  const hopByHop = new Set([
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "content-length"
+  ]);
+
+  upstreamHeaders.forEach((value, key) => {
+    if (hopByHop.has(String(key).toLowerCase())) return;
+    res.setHeader(key, value);
+  });
 }
 
 app.get("/health", (_req, res) => {
@@ -725,6 +806,7 @@ app.post("/v1/instance-configs/:id/load", async (req, res) => {
         bindHost: item.bindHost || "0.0.0.0",
         port: item.port,
         model: item.model,
+        instanceApiKey: normalizeInstanceApiKey(item.instanceApiKey),
         gpus: Array.isArray(item.gpus) ? item.gpus : [],
         maxInflightRequests: Number(item.maxInflightRequests || 4),
         queueLimit: parsePositiveInteger(item.queueLimit, 64, 1, 100000),
@@ -1024,6 +1106,18 @@ app.get("/v1/instances", async (_req, res) => {
     const gpuById = new Map(gpuData.map((gpu) => [String(gpu.id), gpu]));
     state.instances = state.instances.map((inst) => {
       const runtime = bridgeState.data.find((x) => x.instanceId === inst.id);
+      const runtimeInflight = Number(runtime?.inflightRequests);
+      const runtimeQueueDepth = Number(runtime?.queueDepth);
+      const localInflight = Number(inst.inflightRequests || 0);
+      const localQueueDepth = Number(inst.queueDepth || 0);
+      const mergedInflight = Math.max(
+        Number.isFinite(runtimeInflight) ? runtimeInflight : 0,
+        Number.isFinite(localInflight) ? localInflight : 0
+      );
+      const mergedQueueDepth = Math.max(
+        Number.isFinite(runtimeQueueDepth) ? runtimeQueueDepth : 0,
+        Number.isFinite(localQueueDepth) ? localQueueDepth : 0
+      );
       const assignedGpus = Array.isArray(inst.gpus) ? inst.gpus.map((g) => String(g)) : [];
       const gpuStats = assignedGpus
         .map((id) => gpuById.get(id))
@@ -1042,8 +1136,9 @@ app.get("/v1/instances", async (_req, res) => {
         ...inst,
         pid: runtime?.pid || null,
         state: runtime?.state || "stopped",
-        inflightRequests: runtime?.inflightRequests ?? inst.inflightRequests ?? 0,
-        queueDepth: runtime?.queueDepth ?? inst.queueDepth ?? 0,
+        apiKeyApplied: runtime?.apiKeyApplied ?? inst.apiKeyApplied ?? false,
+        inflightRequests: mergedInflight,
+        queueDepth: mergedQueueDepth,
         gpuStats,
         updatedAt: now()
       };
@@ -1053,7 +1148,13 @@ app.get("/v1/instances", async (_req, res) => {
     // Keep last-known state if bridge is unavailable.
   }
 
-  res.json({ data: state.instances, gpus: gpuData });
+  const data = state.instances.map((inst) => ({
+    ...inst,
+    advertisedHost: resolveAdvertisedHost(inst),
+    baseUrl: instancePublicBaseUrl(inst)
+  }));
+
+  res.json({ data, gpus: gpuData });
 });
 
 app.post("/v1/instances/start", async (req, res) => {
@@ -1076,6 +1177,7 @@ app.post("/v1/instances/start", async (req, res) => {
   const queueLimit = parsePositiveInteger(req.body?.queueLimit, 64, 1, 100000);
   const modelTtlSeconds = parseOptionalPositiveInteger(req.body?.modelTtlSeconds);
   const modelParallel = parseOptionalPositiveInteger(req.body?.modelParallel);
+  const instanceApiKey = normalizeInstanceApiKey(req.body?.instanceApiKey) || generateInstanceApiKey();
   const restartPolicy = parseRestartPolicy(req.body?.restartPolicy);
   if (!name) {
     return res.status(400).json({ error: "name is required" });
@@ -1138,6 +1240,7 @@ app.post("/v1/instances/start", async (req, res) => {
     host: launchHost,
     bindHost,
     port: launchPort,
+    instanceApiKey,
     gpus: usesGpu ? launchGpus : [],
     contextLength,
     startupTimeoutMs: 180000,
@@ -1161,6 +1264,8 @@ app.post("/v1/instances/start", async (req, res) => {
     host: launchHost,
     bindHost,
     port: launchPort,
+    instanceApiKey,
+    apiKeyApplied: false,
     state: "starting",
     pid: null,
     gpus: usesGpu ? launchGpus : [],
@@ -1210,6 +1315,7 @@ app.post("/v1/instances/start", async (req, res) => {
       ...(idx >= 0 ? state.instances[idx] : provisional),
       state: launch.state || "starting",
       pid: launch.pid || null,
+      apiKeyApplied: Boolean(launch.apiKeyApplied),
       lastError: null,
       updatedAt: now()
     };
@@ -1328,6 +1434,7 @@ app.post("/v1/instances/:id/model", (req, res) => {
       },
       host: instance.host || "127.0.0.1",
       port: instance.port,
+      instanceApiKey: normalizeInstanceApiKey(instance.instanceApiKey),
       gpus: Array.isArray(instance.gpus) ? instance.gpus : [],
       contextLength: parseContextLength(instance.contextLength)
     };
@@ -1375,6 +1482,83 @@ app.post("/v1/instances/:id/model", (req, res) => {
   });
 });
 
+app.all("/v1/instances/:id/proxy/*", async (req, res) => {
+  const instance = state.instances.find((x) => x.id === req.params.id);
+  if (!instance) return res.status(404).json({ error: "instance not found" });
+
+  const tailPath = String(req.params[0] || "").replace(/^\/+/, "");
+  if (!tailPath) {
+    return res.status(400).json({ error: "proxy path is required (e.g. /v1/chat/completions)" });
+  }
+
+  const targetUrl = `${instanceBaseUrl(instance)}/${tailPath}`;
+  const method = String(req.method || "GET").toUpperCase();
+  const bodyAllowed = !["GET", "HEAD"].includes(method);
+
+  const headers = {
+    accept: req.headers.accept || "application/json"
+  };
+  if (req.headers["content-type"]) {
+    headers["content-type"] = req.headers["content-type"];
+  }
+
+  let body;
+  if (bodyAllowed) {
+    body = req.body && Object.keys(req.body).length > 0 ? JSON.stringify(req.body) : undefined;
+  }
+
+  const abortController = new AbortController();
+  req.on("close", () => {
+    if (!res.writableEnded) {
+      abortController.abort();
+    }
+  });
+
+  let finalized = false;
+  const finalize = () => {
+    if (finalized) return;
+    finalized = true;
+    updateInstanceRequestMetrics(instance, -1);
+  };
+
+  updateInstanceRequestMetrics(instance, 1);
+
+  try {
+    const upstream = await fetch(targetUrl, {
+      method,
+      headers,
+      body,
+      signal: abortController.signal
+    });
+
+    res.status(upstream.status);
+    copyProxyResponseHeaders(upstream.headers, res);
+
+    if (!upstream.body) {
+      const raw = await upstream.text();
+      finalize();
+      return res.send(raw);
+    }
+
+    const stream = Readable.fromWeb(upstream.body);
+    stream.on("end", finalize);
+    stream.on("error", () => {
+      finalize();
+      if (!res.writableEnded) {
+        res.end();
+      }
+    });
+    res.on("close", finalize);
+    stream.pipe(res);
+  } catch (error) {
+    finalize();
+    if (abortController.signal.aborted) {
+      return;
+    }
+    res.status(502).json({ error: "proxy request failed", detail: String(error.message || error) });
+  }
+});
+
 app.get("/v1/instances/:id/logs", async (req, res) => {
   const instance = state.instances.find((x) => x.id === req.params.id);
   if (!instance) return res.status(404).json({ error: "instance not found" });
@@ -1394,11 +1578,11 @@ app.get("/v1/manifest/ready", (_req, res) => {
     .map((x) => ({
       instance_id: x.id,
       state: x.state,
-      base_url: instanceBaseUrl(x),
+      base_url: instancePublicBaseUrl(x),
       api_paths: {
-        health: `${instanceBaseUrl(x)}/v1/models`,
-        chat_completions: `${instanceBaseUrl(x)}/v1/chat/completions`,
-        responses: `${instanceBaseUrl(x)}/v1/responses`
+        health: `${instancePublicBaseUrl(x)}/v1/models`,
+        chat_completions: `${instancePublicBaseUrl(x)}/v1/chat/completions`,
+        responses: `${instancePublicBaseUrl(x)}/v1/responses`
       },
       profile_model: null,
       effective_model: x.effectiveModel,
@@ -1426,14 +1610,43 @@ app.get("/v1/instances/:id/connection", (req, res) => {
   const instance = state.instances.find((x) => x.id === req.params.id);
   if (!instance) return res.status(404).json({ error: "instance not found" });
 
-  const base = instanceBaseUrl(instance);
+  const base = instancePublicBaseUrl(instance);
+  const runtimeBase = instanceBaseUrl(instance);
   res.json({
     instance_id: instance.id,
     base_url: base,
+    runtime_base_url: runtimeBase,
+    advertised_host: resolveAdvertisedHost(instance),
+    instance_api_key: instance.instanceApiKey || null,
+    auth: (instance.instanceApiKey && instance.apiKeyApplied)
+      ? {
+        type: "bearer",
+        api_key: instance.instanceApiKey,
+        authorization_header: `Bearer ${instance.instanceApiKey}`
+      }
+      : {
+        type: "none",
+        reason: instance.instanceApiKey && !instance.apiKeyApplied
+          ? "lmstudio_cli_no_api_key_support"
+          : null
+      },
+    proxy_auth: instance.instanceApiKey
+      ? {
+        type: "bearer",
+        api_key: instance.instanceApiKey,
+        authorization_header: `Bearer ${instance.instanceApiKey}`
+      }
+      : { type: "none" },
+    proxy_base_url: `/v1/instances/${instance.id}/proxy`,
     urls: {
       models: `${base}/v1/models`,
       chat_completions: `${base}/v1/chat/completions`,
       responses: `${base}/v1/responses`
+    },
+    proxy_urls: {
+      models: `/v1/instances/${instance.id}/proxy/v1/models`,
+      chat_completions: `/v1/instances/${instance.id}/proxy/v1/chat/completions`,
+      responses: `/v1/instances/${instance.id}/proxy/v1/responses`
     },
     profile_model: null,
     effective_model: instance.effectiveModel,

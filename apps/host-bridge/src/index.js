@@ -21,6 +21,7 @@ const cleanupUnloadModelsOnStart = process.env.CLEANUP_UNLOAD_MODELS_ON_START !=
 const cleanupUnloadModelsOnExit = process.env.CLEANUP_UNLOAD_MODELS_ON_EXIT !== "false";
 const cleanupStopDaemonOnExit = process.env.CLEANUP_STOP_DAEMON_ON_EXIT === "true";
 const gpuBleedMaxDeltaMiB = Number(process.env.GPU_BLEED_MAX_DELTA_MIB || 256);
+const allowBleedOnOtherAssignedGpus = process.env.GPU_BLEED_ALLOW_OTHER_ASSIGNED === "true";
 const bootstrapHost = String(process.env.LMSTUDIO_HOST || "127.0.0.1");
 const bootstrapPort = Number(process.env.LMSTUDIO_PORT || 1234);
 
@@ -33,6 +34,11 @@ const logsDir = path.join(dataRoot, "logs");
 fs.mkdirSync(logsDir, { recursive: true });
 
 const instances = new Map();
+let numactlSupportedCache = null;
+let serverStartApiKeySupportedCache = null;
+let gpuNumaMapCache = null;
+let gpuNumaMapCachedAt = 0;
+const gpuNumaMapCacheTtlMs = 15000;
 
 function isValidInstanceId(value) {
   return typeof value === "string" && /^[a-zA-Z0-9_-]+$/.test(value);
@@ -59,6 +65,28 @@ function clipText(value, max = 400) {
   const text = String(value || "").replaceAll("\r", "").trim();
   if (!text) return "";
   return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function redactSensitiveText(value) {
+  return String(value || "").replace(/(--api-key(?:=|\s+))(\S+)/gi, "$1***redacted***");
+}
+
+function redactCommandArgs(args = []) {
+  const parts = Array.isArray(args) ? args.map((x) => String(x)) : [];
+  const redacted = [];
+  for (let i = 0; i < parts.length; i += 1) {
+    const current = parts[i];
+    if (current.toLowerCase() === "--api-key") {
+      redacted.push(current);
+      if (i + 1 < parts.length) {
+        redacted.push("***redacted***");
+        i += 1;
+      }
+      continue;
+    }
+    redacted.push(current.replace(/^--api-key=.*/i, "--api-key=***redacted***"));
+  }
+  return redacted;
 }
 
 function writeMeta(instanceId, event, fields = {}) {
@@ -152,21 +180,39 @@ function buildRuntimeEnv(baseEnv, profile) {
 }
 
 async function runLms(args, env, options = {}) {
-  const { instanceId = null, label = args.join(" ") } = options;
+  const { instanceId = null, label = args.join(" "), numaNode = null } = options;
   const startedAt = Date.now();
+  let command = "lms";
+  let commandArgs = Array.isArray(args) ? args.map((x) => String(x)) : [];
+
+  if (Number.isInteger(numaNode) && Number(numaNode) >= 0 && await isNumactlSupported()) {
+    command = "numactl";
+    commandArgs = [
+      `--cpunodebind=${Number(numaNode)}`,
+      `--membind=${Number(numaNode)}`,
+      "lms",
+      ...commandArgs
+    ];
+  }
+
   if (instanceId) {
-    writeMeta(instanceId, "lms.exec.start", { label, args });
+    writeMeta(instanceId, "lms.exec.start", {
+      label: redactSensitiveText(label),
+      command,
+      args: redactCommandArgs(commandArgs),
+      numa_node: Number.isInteger(Number(numaNode)) ? Number(numaNode) : null
+    });
   }
 
   return new Promise((resolve, reject) => {
-    execFile("lms", args, { env }, (error, stdout, stderr) => {
+    execFile(command, commandArgs, { env }, (error, stdout, stderr) => {
       const durationMs = Date.now() - startedAt;
       const stdoutText = clipText(stdout);
       const stderrText = clipText(stderr);
 
       if (instanceId) {
         writeMeta(instanceId, "lms.exec.finish", {
-          label,
+          label: redactSensitiveText(label),
           duration_ms: durationMs,
           ok: !error,
           stdout: stdoutText,
@@ -194,6 +240,94 @@ async function runCommand(command, args) {
       });
     });
   });
+}
+
+async function isNumactlSupported() {
+  if (process.platform !== "linux") {
+    return false;
+  }
+  if (typeof numactlSupportedCache === "boolean") {
+    return numactlSupportedCache;
+  }
+  const check = await runCommand("numactl", ["--show"]);
+  numactlSupportedCache = Boolean(check.ok);
+  return numactlSupportedCache;
+}
+
+async function isServerStartApiKeySupported() {
+  if (typeof serverStartApiKeySupportedCache === "boolean") {
+    return serverStartApiKeySupportedCache;
+  }
+
+  const help = await runCommand("lms", ["server", "start", "--help"]);
+  const text = `${help.stdout || ""}\n${help.stderr || ""}`.toLowerCase();
+  serverStartApiKeySupportedCache = text.includes("--api-key");
+  return serverStartApiKeySupportedCache;
+}
+
+async function getGpuNumaNodeMap() {
+  if (process.platform !== "linux") {
+    return new Map();
+  }
+
+  const nowMs = Date.now();
+  if (gpuNumaMapCache && (nowMs - gpuNumaMapCachedAt) < gpuNumaMapCacheTtlMs) {
+    return gpuNumaMapCache;
+  }
+
+  const result = await runCommand("nvidia-smi", [
+    "--query-gpu=index,numa.node",
+    "--format=csv,noheader,nounits"
+  ]);
+
+  const map = new Map();
+  if (result.ok) {
+    const lines = String(result.stdout || "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      const [indexRaw, nodeRaw] = line.split(",").map((x) => String(x || "").trim());
+      const node = Number(nodeRaw);
+      if (indexRaw !== "" && Number.isInteger(node) && node >= 0) {
+        map.set(String(indexRaw), node);
+      }
+    }
+  }
+
+  gpuNumaMapCache = map;
+  gpuNumaMapCachedAt = nowMs;
+  return map;
+}
+
+async function resolvePinnedNumaNode(gpuIds) {
+  if (!Array.isArray(gpuIds) || gpuIds.length === 0) {
+    return null;
+  }
+
+  if (!await isNumactlSupported()) {
+    return null;
+  }
+
+  const gpuNumaMap = await getGpuNumaNodeMap();
+  if (gpuNumaMap.size === 0) {
+    return null;
+  }
+
+  const nodes = new Set();
+  for (const gpuId of gpuIds) {
+    const key = String(gpuId);
+    if (!gpuNumaMap.has(key)) {
+      return null;
+    }
+    nodes.add(gpuNumaMap.get(key));
+  }
+
+  if (nodes.size !== 1) {
+    return null;
+  }
+  return [...nodes][0];
 }
 
 async function getGpuMemoryUsageMap() {
@@ -266,10 +400,24 @@ function isNoRunningServersMessage(text) {
 
 function isNoLoadedModelsMessage(text) {
   const msg = String(text || "").toLowerCase();
-  return msg.includes("no model")
+  return msg.includes("no loaded models")
+    || msg.includes("there are no models loaded")
     || msg.includes("nothing to unload")
-    || msg.includes("not loaded")
-    || msg.includes("no loaded");
+    || msg.includes("no models are loaded");
+}
+
+async function appearsLoaded(instanceId, modelId) {
+  const result = await runCommand("lms", ["ps"]);
+  if (!result.ok) {
+    return false;
+  }
+
+  const text = `${result.stdout}\n${result.stderr}`.toLowerCase();
+  const needles = [String(instanceId || "").trim(), String(modelId || "").trim()]
+    .filter(Boolean)
+    .map((x) => x.toLowerCase());
+
+  return needles.some((needle) => text.includes(needle));
 }
 
 function knownModelsFromInstances() {
@@ -278,6 +426,15 @@ function knownModelsFromInstances() {
       .map((record) => String(record?.profile?.model || "").trim())
       .filter(Boolean)
   )];
+}
+
+function hasOtherActiveInstances(excludeInstanceId = null) {
+  for (const [id, record] of instances.entries()) {
+    if (excludeInstanceId && id === excludeInstanceId) continue;
+    if (!record || record.state === "stopped") continue;
+    return true;
+  }
+  return false;
 }
 
 async function unloadModels(reason = "unspecified") {
@@ -373,13 +530,15 @@ async function ensureServerStart(env, port, instanceId = null) {
   });
 }
 
-async function ensureServerStartWithArgs(env, args, instanceId = null) {
+async function ensureServerStartWithArgs(env, args, instanceId = null, options = {}) {
   const startArgs = Array.isArray(args) && args.length > 0
     ? args.map((x) => String(x))
     : ["server", "start"];
+  const numaNode = options?.numaNode;
   await runLms(startArgs, env, {
     instanceId,
-    label: `lms ${startArgs.join(" ")}`
+    label: `lms ${startArgs.join(" ")}`,
+    numaNode
   });
 }
 
@@ -390,6 +549,9 @@ async function ensureModelLoaded(model, env, instanceId = null, options = {}) {
   }
 
   const args = ["load", modelId];
+  if (instanceId) {
+    args.push("--identifier", String(instanceId));
+  }
   const ttlSeconds = Number(options?.ttlSeconds);
   if (Number.isInteger(ttlSeconds) && ttlSeconds > 0) {
     args.push("--ttl", String(ttlSeconds));
@@ -400,21 +562,161 @@ async function ensureModelLoaded(model, env, instanceId = null, options = {}) {
     args.push("--parallel", String(parallel));
   }
 
+  const numaNode = options?.numaNode;
   await runLms(args, env, {
     instanceId,
-    label: `lms ${args.join(" ")}`
+    label: `lms ${args.join(" ")}`,
+    numaNode
   });
 }
 
 async function stopServer(profile, env, instanceId = null) {
   const port = Number(profile?.port);
-  const args = Number.isInteger(port) && port > 0
-    ? ["server", "stop", "--port", String(port)]
-    : ["server", "stop"];
-  await runLms(args, env, {
+  if (Number.isInteger(port) && port > 0) {
+    try {
+      await runLms(["server", "stop", "--port", String(port)], env, {
+        instanceId,
+        label: `lms server stop --port ${port}`
+      });
+      return;
+    } catch (error) {
+      const text = String(error.message || error).toLowerCase();
+      const unsupportedPortFlag = text.includes("unknown option '--port'");
+      if (!unsupportedPortFlag) {
+        throw error;
+      }
+
+      if (instanceId) {
+        writeMeta(instanceId, "instance.stop.port_flag_unsupported", {
+          port,
+          detail: "falling back to lms server stop"
+        });
+      }
+    }
+  }
+
+  await runLms(["server", "stop"], env, {
     instanceId,
-    label: `lms ${args.join(" ")}`
+    label: "lms server stop"
   });
+}
+
+function hasOtherActiveInstanceUsingModel(instanceId, modelId) {
+  const normalizedModel = String(modelId || "").trim();
+  if (!normalizedModel) return false;
+
+  for (const [id, record] of instances.entries()) {
+    if (id === instanceId) continue;
+    if (!record || record.state === "stopped") continue;
+    const peerModel = String(record?.profile?.model || "").trim();
+    if (peerModel && peerModel === normalizedModel) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function unloadInstanceModel(instanceId, modelId, reason = "instance_stop") {
+  const instanceTag = String(instanceId || "").trim();
+  if (!instanceTag) return { unloaded: false, reason: "missing_instance_id" };
+
+  const identifierResult = await runCommand("lms", ["unload", "--identifier", instanceTag]);
+  const identifierCombined = `${identifierResult.stdout}\n${identifierResult.stderr}\n${identifierResult.error || ""}`;
+  if (identifierResult.ok || isNoLoadedModelsMessage(identifierCombined)) {
+    const stillLoaded = await appearsLoaded(instanceTag, modelId);
+    if (stillLoaded && !hasOtherActiveInstances(instanceTag)) {
+      const allResult = await runCommand("lms", ["unload", "--all"]);
+      const allCombined = `${allResult.stdout}\n${allResult.stderr}\n${allResult.error || ""}`;
+      const allOk = allResult.ok || isNoLoadedModelsMessage(allCombined);
+      writeMeta(instanceTag, "instance.model.unload", {
+        reason,
+        method: "all_verify",
+        ok: allOk,
+        detail: clipText(allCombined, 200)
+      });
+      if (allOk) {
+        return { unloaded: true, method: "all_verify" };
+      }
+    }
+
+    writeMeta(instanceTag, "instance.model.unload", {
+      reason,
+      method: "identifier",
+      ok: true,
+      detail: clipText(identifierCombined, 200)
+    });
+    return { unloaded: true, method: "identifier" };
+  }
+
+  const model = String(modelId || "").trim();
+  if (!model) {
+    writeMeta(instanceTag, "instance.model.unload", {
+      reason,
+      method: "identifier",
+      ok: false,
+      detail: clipText(identifierCombined, 200)
+    });
+    return { unloaded: false, reason: "identifier_failed_no_model" };
+  }
+
+  if (hasOtherActiveInstanceUsingModel(instanceTag, model)) {
+    writeMeta(instanceTag, "instance.model.unload.skipped", {
+      reason,
+      model,
+      detail: "other active instance uses same model"
+    });
+    return { unloaded: false, reason: "shared_model_active" };
+  }
+
+  const modelResult = await runCommand("lms", ["unload", model]);
+  const modelCombined = `${modelResult.stdout}\n${modelResult.stderr}\n${modelResult.error || ""}`;
+  const modelOk = modelResult.ok || isNoLoadedModelsMessage(modelCombined);
+  writeMeta(instanceTag, "instance.model.unload", {
+    reason,
+    method: "model",
+    model,
+    ok: modelOk,
+    detail: clipText(modelCombined, 200)
+  });
+
+  if (!modelOk) {
+    if (!hasOtherActiveInstances(instanceTag)) {
+      const allResult = await runCommand("lms", ["unload", "--all"]);
+      const allCombined = `${allResult.stdout}\n${allResult.stderr}\n${allResult.error || ""}`;
+      const allOk = allResult.ok || isNoLoadedModelsMessage(allCombined);
+      writeMeta(instanceTag, "instance.model.unload", {
+        reason,
+        method: "all",
+        ok: allOk,
+        detail: clipText(allCombined, 200)
+      });
+      if (allOk) {
+        return { unloaded: true, method: "all" };
+      }
+    }
+    return { unloaded: false, reason: "model_unload_failed" };
+  }
+
+  if (!hasOtherActiveInstances(instanceTag)) {
+    const stillLoaded = await appearsLoaded(instanceTag, model);
+    if (stillLoaded) {
+      const allResult = await runCommand("lms", ["unload", "--all"]);
+      const allCombined = `${allResult.stdout}\n${allResult.stderr}\n${allResult.error || ""}`;
+      const allOk = allResult.ok || isNoLoadedModelsMessage(allCombined);
+      writeMeta(instanceTag, "instance.model.unload", {
+        reason,
+        method: "all_verify",
+        ok: allOk,
+        detail: clipText(allCombined, 200)
+      });
+      if (allOk) {
+        return { unloaded: true, method: "all_verify" };
+      }
+      return { unloaded: false, reason: "verify_still_loaded" };
+    }
+  }
+
+  return { unloaded: true, method: "model" };
 }
 
 async function checkInstanceReady(profile) {
@@ -527,13 +829,31 @@ async function launchRuntimeForInstance(instanceId, record, reason = "start") {
   }
 
   const selectedGpuIds = runtimeEnv.gpuIds.map((g) => String(g));
-  const allowedOtherGpuIds = activeAssignedGpuSet(instanceId);
+  const numaNode = runtimeEnv.backend !== "cpu"
+    ? await resolvePinnedNumaNode(selectedGpuIds)
+    : null;
+  const allowedOtherGpuIds = allowBleedOnOtherAssignedGpus ? activeAssignedGpuSet(instanceId) : new Set();
   let gpuMemoryBefore = null;
   if (runtimeEnv.backend !== "cpu" && selectedGpuIds.length > 0) {
     gpuMemoryBefore = await getGpuMemoryUsageMap();
   }
 
   const runtimeArgs = resolveServerArgs(profile);
+  const requestedApiKey = String(profile?.instanceApiKey || "").trim();
+  const apiKeySupported = requestedApiKey ? await isServerStartApiKeySupported() : false;
+  const apiKeyApplied = Boolean(requestedApiKey && apiKeySupported);
+  if (requestedApiKey && apiKeySupported) {
+    const hasApiKeyArg = runtimeArgs.some((arg, idx) => arg === "--api-key" || (idx > 0 && runtimeArgs[idx - 1] === "--api-key") || arg.startsWith("--api-key="));
+    if (!hasApiKeyArg) {
+      runtimeArgs.push("--api-key", requestedApiKey);
+    }
+  }
+  if (requestedApiKey && !apiKeySupported) {
+    writeMeta(instanceId, "instance.auth.api_key.unsupported", {
+      detail: "lms server start --help does not include --api-key; launching without instance auth"
+    });
+  }
+  record.apiKeyApplied = apiKeyApplied;
   writeMeta(instanceId, "instance.start.request", {
     reason,
     host: String(profile.host || "127.0.0.1"),
@@ -548,7 +868,10 @@ async function launchRuntimeForInstance(instanceId, record, reason = "start") {
       vulkan: env.GGML_VK_VISIBLE_DEVICES || ""
     },
     runtime_backend: runtimeEnv.backend,
-    runtime_args: runtimeArgs.join(" "),
+    instance_api_key_requested: Boolean(requestedApiKey),
+    instance_api_key_applied: apiKeyApplied,
+    numa_node: Number.isInteger(Number(numaNode)) ? Number(numaNode) : null,
+    runtime_args: redactSensitiveText(runtimeArgs.join(" ")),
     context_length: Number.isInteger(Number(profile.contextLength)) && Number(profile.contextLength) > 0
       ? Number(profile.contextLength)
       : "auto",
@@ -563,10 +886,11 @@ async function launchRuntimeForInstance(instanceId, record, reason = "start") {
   });
 
   await ensureDaemonUp(env, instanceId);
-  await ensureServerStartWithArgs(env, runtimeArgs, instanceId);
+  await ensureServerStartWithArgs(env, runtimeArgs, instanceId, { numaNode });
   await ensureModelLoaded(profile.model, env, instanceId, {
     ttlSeconds: profile.modelTtlSeconds,
-    parallel: profile.modelParallel
+    parallel: profile.modelParallel,
+    numaNode
   });
 
   if (runtimeEnv.backend !== "cpu" && selectedGpuIds.length > 0) {
@@ -980,7 +1304,8 @@ app.get("/v1/instances", (_req, res) => {
     state: value.state,
     inflightRequests: value.inflightRequests,
     queueDepth: value.queueDepth,
-    drain: value.drain
+    drain: value.drain,
+    apiKeyApplied: Boolean(value.apiKeyApplied)
   }));
 
   res.json({ data });
@@ -1009,6 +1334,7 @@ app.post("/v1/instances/start", async (req, res) => {
     drain: false,
     lastHealthOkAt: null,
     lastError: null,
+    apiKeyApplied: false,
     restartPolicy,
     restartAttempts: 0,
     restartInFlight: false
@@ -1023,12 +1349,27 @@ app.post("/v1/instances/start", async (req, res) => {
     const isInputError = errorText.includes("non-CPU runtime requires explicit GPU selection");
     record.state = "unhealthy";
     record.lastError = errorText;
+    let stopError = null;
+    let unload = null;
     try {
       await stopServer(profile, process.env, instanceId);
-    } catch {
-      // Best effort cleanup on launch failure.
+    } catch (cleanupError) {
+      stopError = String(cleanupError.message || cleanupError);
     }
-    writeMeta(instanceId, "instance.start.failed", { error: record.lastError });
+    try {
+      unload = await unloadInstanceModel(instanceId, profile?.model, "startup_failure");
+    } catch (unloadError) {
+      unload = {
+        unloaded: false,
+        reason: "startup_failure_unload_exception",
+        detail: String(unloadError.message || unloadError)
+      };
+    }
+    writeMeta(instanceId, "instance.start.failed", {
+      error: record.lastError,
+      stop_error: stopError,
+      unload
+    });
     if (!isInputError) {
       void maybeAutoRestart(instanceId, record, "startup_failure");
     }
@@ -1039,7 +1380,8 @@ app.post("/v1/instances/start", async (req, res) => {
     success: true,
     instanceId,
     pid: null,
-    state: record.state
+    state: record.state,
+    apiKeyApplied: Boolean(record.apiKeyApplied)
   });
 });
 
@@ -1049,6 +1391,7 @@ app.post("/v1/instances/:id/stop", async (req, res) => {
   if (!record) return res.status(404).json({ error: "instance not found" });
 
   try {
+    let stopError = null;
     writeMeta(req.params.id, "instance.stop.request", {
       has_process: Boolean(record.process && !record.process.killed),
       port: Number(record.profile?.port)
@@ -1057,13 +1400,25 @@ app.post("/v1/instances/:id/stop", async (req, res) => {
     if (record.process && !record.process.killed) {
       record.process.kill("SIGTERM");
     } else {
-      await stopServer(record.profile, process.env, req.params.id);
+      try {
+        await stopServer(record.profile, process.env, req.params.id);
+      } catch (error) {
+        stopError = String(error.message || error);
+      }
       record.state = "stopped";
     }
+    const unload = await unloadInstanceModel(req.params.id, record.profile?.model, "instance_stop");
     record.restartInFlight = false;
     record.restartAttempts = 0;
-    writeMeta(req.params.id, "instance.stop.completed", { state: record.state });
-    res.json({ success: true });
+    writeMeta(req.params.id, "instance.stop.completed", { state: record.state, stop_error: stopError, unload });
+    if ((!unload.unloaded || stopError) && !hasOtherActiveInstances(req.params.id)) {
+      return res.status(502).json({
+        error: stopError ? "instance stop encountered errors" : "instance stopped but model unload failed",
+        stopError,
+        unload
+      });
+    }
+    res.json({ success: true, stopError, unload });
   } catch (error) {
     writeMeta(req.params.id, "instance.stop.failed", { error: String(error.message || error) });
     res.status(502).json({ error: String(error.message || error) });
@@ -1076,6 +1431,7 @@ app.post("/v1/instances/:id/kill", async (req, res) => {
   if (!record) return res.status(404).json({ error: "instance not found" });
 
   try {
+    let stopError = null;
     writeMeta(req.params.id, "instance.kill.request", {
       has_process: Boolean(record.process && !record.process.killed),
       port: Number(record.profile?.port)
@@ -1083,13 +1439,25 @@ app.post("/v1/instances/:id/kill", async (req, res) => {
     if (record.process && !record.process.killed) {
       record.process.kill("SIGKILL");
     } else {
-      await stopServer(record.profile, process.env, req.params.id);
+      try {
+        await stopServer(record.profile, process.env, req.params.id);
+      } catch (error) {
+        stopError = String(error.message || error);
+      }
     }
+    const unload = await unloadInstanceModel(req.params.id, record.profile?.model, "instance_kill");
     record.state = "stopped";
     record.restartInFlight = false;
     record.restartAttempts = 0;
-    writeMeta(req.params.id, "instance.kill.completed", { state: record.state });
-    res.json({ success: true });
+    writeMeta(req.params.id, "instance.kill.completed", { state: record.state, stop_error: stopError, unload });
+    if ((!unload.unloaded || stopError) && !hasOtherActiveInstances(req.params.id)) {
+      return res.status(502).json({
+        error: stopError ? "instance kill encountered errors" : "instance killed but model unload failed",
+        stopError,
+        unload
+      });
+    }
+    res.json({ success: true, stopError, unload });
   } catch (error) {
     writeMeta(req.params.id, "instance.kill.failed", { error: String(error.message || error) });
     res.status(502).json({ error: String(error.message || error) });

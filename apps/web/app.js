@@ -95,6 +95,23 @@ function stateChipHtml(state) {
   return `<span class="state-chip state-${normalized}"><span class="state-dot"></span>${safeText}</span>`;
 }
 
+function activityChipHtml(inst) {
+  const inflight = Math.max(0, Number(inst?.inflightRequests || 0));
+  const maxInflight = Math.max(1, Number(inst?.maxInflightRequests || 1));
+  const queueDepth = Math.max(0, Number(inst?.queueDepth || 0));
+  const isProcessing = inflight > 0;
+  const statusText = isProcessing ? "Processing" : "Idle";
+
+  return `
+    <div class="activity-chip ${isProcessing ? "processing" : "idle"}">
+      <span class="activity-dot"></span>
+      <span>${statusText}</span>
+      <span class="activity-count">${inflight}/${maxInflight}</span>
+      ${queueDepth > 0 ? `<span class="activity-queue">q:${queueDepth}</span>` : ""}
+    </div>
+  `;
+}
+
 async function api(path, options = {}) {
   const headers = {
     "content-type": "application/json",
@@ -572,6 +589,11 @@ async function refreshInstances() {
     }
     instancesCache = data || [];
     const tbody = $("instanceRows");
+    const openOptionsByInstance = new Set(
+      Array.from(tbody.querySelectorAll("details.action-more[open]"))
+        .map((el) => el.getAttribute("data-instance-id"))
+        .filter(Boolean)
+    );
     tbody.innerHTML = "";
     const logsSelect = $("logsInstanceSelect");
     const selectedLogInstance = logsSelect.value;
@@ -587,10 +609,12 @@ async function refreshInstances() {
       const tr = document.createElement("tr");
       const normalizedState = String(inst.state || "unknown").toLowerCase();
       tr.setAttribute("data-state", normalizedState);
-      const baseUrl = `http://${inst.host || "127.0.0.1"}:${inst.port}`;
+      const baseUrl = String(inst.baseUrl || `http://${inst.host || "127.0.0.1"}:${inst.port}`);
+      const proxyBaseUrl = `${settings.apiBase}/v1/instances/${encodeURIComponent(inst.id)}/proxy`;
       const runtimeBackend = normalizeRuntimeBackend(inst.runtime?.hardware || "auto");
       const runtimeLabel = inst.runtime?.label || runtimeBackend;
       const isStopped = String(inst.state || "").toLowerCase() === "stopped";
+      const hasApiKey = Boolean(String(inst.instanceApiKey || "").trim());
       const primaryAction = isStopped
         ? `<button class="delete" data-action="delete" data-id="${inst.id}">Remove</button>`
         : `<button data-action="stop" data-id="${inst.id}">Stop</button>`;
@@ -606,7 +630,10 @@ async function refreshInstances() {
 
       tr.innerHTML = `
         <td>${inst.id}</td>
-        <td>${stateChipHtml(inst.state)}</td>
+        <td>
+          ${stateChipHtml(inst.state)}
+          ${activityChipHtml(inst)}
+        </td>
         <td>
           <div>${escapeHtml(inst.effectiveModel || "-")}</div>
           <div class="runtime-meta">ctx: ${inst.contextLength || "auto"}</div>
@@ -618,16 +645,18 @@ async function refreshInstances() {
           <div class="action-primary">
             ${primaryAction}
           </div>
-          <details class="action-more">
+          <details class="action-more" data-instance-id="${inst.id}" ${openOptionsByInstance.has(String(inst.id)) ? "open" : ""}>
             <summary>Options</summary>
             <div class="action-secondary">
               ${drainAction}
               ${forceStopAction}
               <div class="action-copy-grid">
-                <button class="copy" data-action="copy-base" data-id="${inst.id}" data-copy="${baseUrl}">Base URL</button>
-                <button class="copy" data-action="copy-chat" data-id="${inst.id}" data-copy="${baseUrl}/v1/chat/completions">Chat URL</button>
+                <button class="copy" data-action="copy-base" data-id="${inst.id}" data-copy="${proxyBaseUrl}">Proxy Base URL</button>
+                <button class="copy" data-action="copy-chat" data-id="${inst.id}" data-copy="${proxyBaseUrl}/v1/chat/completions">Proxy Chat URL</button>
               </div>
+              ${hasApiKey ? `<button class="copy" data-action="copy-api-key" data-id="${inst.id}" data-copy="${escapeHtml(inst.instanceApiKey)}">Copy API Key</button>` : ""}
               <button class="copy" data-action="copy-model" data-id="${inst.id}" data-copy="${inst.effectiveModel}">Copy Model ID</button>
+              <button class="copy" data-action="copy-direct" data-id="${inst.id}" data-copy="${baseUrl}/v1/chat/completions">Copy Direct Chat URL</button>
               ${removeSecondaryAction}
             </div>
           </details>
@@ -680,7 +709,7 @@ async function refreshInstances() {
             await api(`/v1/instances/${id}`, {
               method: "DELETE"
             });
-          } else if (action === "copy-base" || action === "copy-chat" || action === "copy-model") {
+          } else if (action === "copy-base" || action === "copy-chat" || action === "copy-model" || action === "copy-direct" || action === "copy-api-key") {
             copy(btn.getAttribute("data-copy") || "");
             return;
           }
@@ -920,6 +949,6 @@ refreshInstances();
 refreshConfigLibrary();
 loadRuntimeBackends({ silent: true });
 applyRestartPolicyUi();
-setInterval(refreshInstances, 5000);
+setInterval(refreshInstances, 2000);
 setInterval(() => loadSystemGpus("launchGpus"), 15000);
 setInterval(() => loadRuntimeBackends({ silent: true }), 60000);

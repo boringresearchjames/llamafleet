@@ -492,6 +492,57 @@ button:active {
   font-weight: 700;
 }
 
+.activity-chip {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(159, 176, 216, 0.24);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  color: var(--muted);
+}
+
+.activity-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(107, 122, 154, 0.6);
+  flex-shrink: 0;
+}
+
+.activity-chip .activity-count {
+  color: #d8e6ff;
+  font-weight: 700;
+}
+
+.activity-chip .activity-queue {
+  color: #ffc978;
+}
+
+.activity-chip.processing {
+  border-color: rgba(76, 219, 142, 0.4);
+  color: #b9f5d3;
+}
+
+.activity-chip.processing .activity-dot {
+  background: #4cdb8e;
+  box-shadow: 0 0 0 0 rgba(76, 219, 142, 0.55);
+  animation: activity-pulse 1.2s infinite;
+}
+
+.activity-chip.idle {
+  border-color: rgba(107, 122, 154, 0.3);
+}
+
+@keyframes activity-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(76, 219, 142, 0.55); }
+  80%  { box-shadow: 0 0 0 7px rgba(76, 219, 142, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(76, 219, 142, 0); }
+}
+
 .state-dot {
   width: 8px;
   height: 8px;
