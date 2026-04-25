@@ -85,8 +85,19 @@ Things that are currently out of scope or worth being aware of before adopting:
 - **LM Studio as a dependency** — LM Studio (and its `lms` CLI) must be installed on the host. LM Launch does not manage LM Studio installation or updates.
 - **LM Studio GPU tensor split bug** — As of early 2026, LM Studio has a known issue where some dual-GPU configurations (e.g. 2× RTX PRO 5000 Blackwell) resolve tensor split incorrectly, producing garbage output or crashes. LM Launch assigns GPUs per-instance via environment variables; if LM Studio has a tensor split bug for a given card pairing, that bug will manifest regardless of LM Launch.
 - **No model download management** — LM Launch does not download or manage model files. Models must already be in your LM Studio model library. Use `lms get` or the LM Studio UI to download models.
-- **No authentication per-instance** — The LM Launch API has a single bearer token. Individual instances expose unauthenticated OpenAI-compatible endpoints on their assigned ports. Place a reverse proxy in front if you need per-instance auth or TLS.
-- **No speculative decoding or prefix caching** — LM Launch relies on whatever llama.cpp runtime LM Studio provides. Advanced inference features like speculative decoding or RadixAttention-style prefix caching are not available through this stack.
+- **No authentication per-instance** — The LM Launch API has a single bearer token. Individual instances expose unauthenticated OpenAI-compatible endpoints on their assigned ports. Note: `lms server start` accepts an `--api-key` flag — this could be wired through as an Advanced launch option so LM Studio itself enforces auth on each instance port. Place a reverse proxy in front if you need TLS in the meantime.
+- **No speculative decoding or prefix caching** — LM Launch relies on whatever llama.cpp runtime LM Studio provides. Advanced inference features like speculative decoding (draft model + verifier in one pass) or RadixAttention-style prefix caching (reusing KV cache across requests that share a system prompt) are not currently available through this stack. llama.cpp has experimental `--draft-model` support but LM Studio does not expose it via `lms` yet.
+
+## Planned / TODO
+
+Roughly prioritized:
+
+- [ ] **Multi-host support** — extend the bridge concept to remote hosts so a single LM Launch API can manage instances across multiple machines. Natural next step for GPU clusters that exceed one box.
+- [ ] **Per-instance API key** — wire `--api-key` through the launch Advanced options so each instance port is protected by LM Studio's own auth. LM Studio supports this natively via `lms server start --api-key`; it just needs to be surfaced in the UI and stored per-instance.
+- [ ] **Prometheus `/metrics` endpoint** — expose per-instance token throughput, queue depth, latency p50/p95, and GPU memory as a Prometheus scrape target. Useful for Grafana dashboards and alerting on unhealthy instances.
+- [ ] **Reverse proxy / load balancer manifest** — emit a ready-made nginx/Caddy/Traefik config or a simple built-in round-robin proxy across healthy instances of the same model, so clients can hit one endpoint and LM Launch routes the request.
+- [ ] **Startup timeout and smoke check config** — currently readiness polling is fixed; expose timeout, retry interval, and expected response schema as per-instance options.
+- [ ] **Save as default template** — let users mark a launch configuration as the default so the form pre-fills on reload.
 
 ## Architecture (Node Native)
 
