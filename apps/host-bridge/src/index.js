@@ -608,6 +608,35 @@ async function ensureServerStartWithArgs(env, args, instanceId = null, options =
   });
 }
 
+async function selectRuntime(runtimeId, env, instanceId = null) {
+  if (!runtimeId || runtimeId === "auto") {
+    return;
+  }
+  const runtimeIdStr = String(runtimeId || "").trim();
+  if (!runtimeIdStr) {
+    return;
+  }
+  try {
+    await runLms(["runtime", "select", runtimeIdStr], env, {
+      instanceId,
+      label: `lms runtime select ${runtimeIdStr}`
+    });
+    if (instanceId) {
+      writeMeta(instanceId, "instance.runtime.selected", {
+        runtime_id: runtimeIdStr
+      });
+    }
+  } catch (error) {
+    if (instanceId) {
+      writeMeta(instanceId, "instance.runtime.selection.failed", {
+        runtime_id: runtimeIdStr,
+        error: String(error?.message || error)
+      });
+    }
+    throw new Error(`Failed to select runtime ${runtimeIdStr}: ${error?.message || error}`);
+  }
+}
+
 async function ensureModelLoaded(model, env, instanceId = null, options = {}) {
   const modelId = String(model || "").trim();
   if (!modelId) {
@@ -980,6 +1009,11 @@ async function launchRuntimeForInstance(instanceId, record, reason = "start") {
     await recycleDaemonWithEnv(env, instanceId, "single_instance_gpu_isolation");
   } else {
     await ensureDaemonUp(env, instanceId);
+  }
+
+  const runtimeSelection = String(profile?.runtime?.selection || "").trim();
+  if (runtimeSelection && runtimeSelection !== "auto") {
+    await selectRuntime(runtimeSelection, env, instanceId);
   }
 
   await ensureServerStartWithArgs(env, runtimeArgs, instanceId, { numaNode });
