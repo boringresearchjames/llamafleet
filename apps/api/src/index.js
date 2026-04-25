@@ -1657,6 +1657,8 @@ app.all("/v1/instances/:id/proxy/*", async (req, res) => {
     const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
     const isJson = contentType.includes("application/json");
     const isSse = contentType.includes("text/event-stream");
+    const isDiagnosticChat = method === "POST"
+      && String(tailPath || "").toLowerCase().includes("chat/completions");
 
     if (!upstream.body || (isJson && !isSse)) {
       const raw = await upstream.text();
@@ -1669,9 +1671,29 @@ app.all("/v1/instances/:id/proxy/*", async (req, res) => {
           // Keep proxy transparent even when upstream JSON is malformed.
         }
       }
+
+      if (isDiagnosticChat) {
+        const preview = String(raw || "").replace(/\s+/g, " ").slice(0, 280);
+        audit("proxy.chat.response", {
+          instanceId: instance.id,
+          status: upstream.status,
+          contentType,
+          responseBytes: String(raw || "").length,
+          preview
+        });
+      }
+
       saveState(state);
       finalize();
       return res.send(raw);
+    }
+
+    if (isDiagnosticChat) {
+      audit("proxy.chat.stream", {
+        instanceId: instance.id,
+        status: upstream.status,
+        contentType
+      });
     }
 
     const stream = Readable.fromWeb(upstream.body);
