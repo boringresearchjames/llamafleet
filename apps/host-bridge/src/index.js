@@ -197,7 +197,7 @@ async function runCommand(command, args) {
 async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
   const profile = record?.profile || {};
   const args = resolveServerArgs(profile);
-  const command = String(llamaServerBinary).trim() || "llama-server";
+  let command = String(llamaServerBinary).trim() || "llama-server";
   let commandArgs = [...args];
 
   if (Number.isInteger(Number(numaNode)) && Number(numaNode) >= 0 && await isNumactlSupported()) {
