@@ -768,7 +768,7 @@ td {
   border-top: 1px solid rgba(159, 176, 216, 0.22);
   border-bottom: 1px solid rgba(159, 176, 216, 0.22);
   border-left: none;
-  border-right: none;
+  border-right: 1px solid rgba(159, 176, 216, 0.15);
   padding: 8px;
   font-size: 12px;
   vertical-align: top;
@@ -793,8 +793,12 @@ th {
   font-weight: 700;
 }
 
+tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.025);
+}
+
 tbody tr:hover td {
-  background: rgba(92, 165, 255, 0.04);
+  background: rgba(92, 165, 255, 0.06);
 }
 
 .actions {
