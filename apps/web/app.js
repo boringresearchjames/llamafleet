@@ -1123,11 +1123,6 @@ async function refreshInstances() {
     }
     instancesCache = data || [];
     const tbody = $("instanceRows");
-    const openOptionsByInstance = new Set(
-      Array.from(tbody.querySelectorAll("details.action-more[open]"))
-        .map((el) => el.getAttribute("data-instance-id"))
-        .filter(Boolean)
-    );
     tbody.innerHTML = "";
     const logsSelect = $("logsInstanceSelect");
     const selectedLogInstance = logsSelect.value;
@@ -1143,7 +1138,6 @@ async function refreshInstances() {
       const normalizedState = String(inst.state || "unknown").toLowerCase();
       tr.setAttribute("data-state", normalizedState);
       const baseUrl = String(inst.baseUrl || `http://${inst.host || "127.0.0.1"}:${inst.port}`);
-      const proxyBaseUrl = String(inst.proxyBaseUrl || `${settings.apiBase}/v1/instances/${encodeURIComponent(inst.id)}/proxy/v1`);
       const runtimeBackend = normalizeRuntimeBackend(inst.runtime?.hardware || "auto");
       const runtimeLabel = runtimeBackend;
       const isStopped = String(inst.state || "").toLowerCase() === "stopped";
@@ -1153,7 +1147,6 @@ async function refreshInstances() {
       const drainAction = isStopped
         ? ""
         : `<button data-action="drain" data-id="${inst.id}" data-enabled="${inst.drain ? "false" : "true"}">${inst.drain ? "\u25b6 Resume Intake" : "\u23f8 Pause Intake"}</button>`;
-      const removeSecondaryAction = "";
       const testAction = isStopped
         ? ""
         : `<button class="copy" data-action="test" data-id="${inst.id}">Test Prompt</button>`;
@@ -1179,17 +1172,12 @@ async function refreshInstances() {
           <div class="action-primary">
             ${primaryAction}
           </div>
-          <details class="action-more" data-instance-id="${inst.id}" ${openOptionsByInstance.has(String(inst.id)) ? "open" : ""}>
-            <summary>Options</summary>
-            <div class="action-secondary">
-              ${testAction}
-              ${drainAction}
-              <button class="copy" data-action="copy-base" data-id="${inst.id}" data-copy="${proxyBaseUrl}">Copy API URL</button>
-              <button class="copy" data-action="copy-model" data-id="${inst.id}" data-copy="${inst.effectiveModel}">Copy Model ID</button>
-              <button class="copy" data-action="clone" data-id="${inst.id}">Clone Setup</button>
-              ${removeSecondaryAction}
-            </div>
-          </details>
+          <div class="action-secondary">
+            ${testAction}
+            ${drainAction}
+            <button class="copy" data-action="copy-model" data-id="${inst.id}" data-copy="${inst.effectiveModel}">Copy Model ID</button>
+            <button class="copy" data-action="clone" data-id="${inst.id}">Clone Setup</button>
+          </div>
         </td>
       `;
 
@@ -1261,7 +1249,9 @@ async function refreshInstances() {
   }
 }
 
-$("refreshInstances").onclick = refreshInstances;
+$("copyApiUrl").onclick = () => {
+  copy(`${(settings.apiBase || "").replace(/\/$/, "")}/v1`);
+};
 
 let autoTailTimer = null;
 
