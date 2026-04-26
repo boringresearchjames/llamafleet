@@ -197,18 +197,17 @@ async function runCommand(command, args) {
 async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
   const profile = record?.profile || {};
   const args = resolveServerArgs(profile);
-  const baseCommand = String(profile?.runtime?.binary || llamaServerBinary).trim() || llamaServerBinary;
-  let command = baseCommand;
+  const command = String(llamaServerBinary).trim() || "llama-server";
   let commandArgs = [...args];
 
   if (Number.isInteger(Number(numaNode)) && Number(numaNode) >= 0 && await isNumactlSupported()) {
-    command = "numactl";
     commandArgs = [
       `--cpunodebind=${Number(numaNode)}`,
       `--membind=${Number(numaNode)}`,
-      baseCommand,
+      command,
       ...commandArgs
     ];
+    command = "numactl";
   }
 
   writeMeta(instanceId, "llama.exec.start", {
@@ -241,7 +240,7 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
   record.process = child;
 
   const streamLog = (stream, chunk) => {
-    const text = String(chunk || "");
+    const text = redactSensitiveText(String(chunk || ""));
     if (!text) return;
     writeLog(instanceId, stream, text);
   };

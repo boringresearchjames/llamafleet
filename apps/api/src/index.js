@@ -21,6 +21,9 @@ app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", corsOrigin);
   res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   res.header("Access-Control-Allow-Headers", corsHeaders);
+  res.header("X-Content-Type-Options", "nosniff");
+  res.header("X-Frame-Options", "DENY");
+  res.header("Referrer-Policy", "strict-origin-when-cross-origin");
   if (req.method === "OPTIONS") {
     return res.sendStatus(204);
   }
@@ -487,6 +490,21 @@ function cleanupSessions() {
   state.sessions = state.sessions.filter((s) => new Date(s.expiresAt).getTime() > nowTs);
 }
 
+function timingSafeEqual(a, b) {
+  try {
+    const ab = Buffer.from(String(a || ""));
+    const bb = Buffer.from(String(b || ""));
+    if (ab.length !== bb.length) {
+      // Compare against itself to consume constant time, then return false.
+      crypto.timingSafeEqual(ab, ab);
+      return false;
+    }
+    return crypto.timingSafeEqual(ab, bb);
+  } catch {
+    return false;
+  }
+}
+
 function auth(req, res, next) {
   if (!isGlobalApiKeyRequired()) {
     return next();
@@ -497,13 +515,13 @@ function auth(req, res, next) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  if (token !== apiToken) {
+  if (!timingSafeEqual(token, apiToken)) {
     if (!state.settings.security.auth.enabled) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
     cleanupSessions();
-    const session = state.sessions.find((s) => s.token === token);
+    const session = state.sessions.find((s) => timingSafeEqual(s.token, token));
     if (!session) {
       return res.status(401).json({ error: "Unauthorized" });
     }
@@ -521,7 +539,7 @@ function requireAdminToken(req, res, next) {
   }
 
   const token = getBearerToken(req);
-  if (token !== apiToken) {
+  if (!timingSafeEqual(token, apiToken)) {
     return res.status(403).json({ error: "Admin token required" });
   }
   return next();
@@ -2184,7 +2202,7 @@ app.get("/v1/local-models", (_req, res) => {
   return res.json({ data: results, dir: primaryDir, dirs: dirsScanned });
 });
 
-app.get("/v1/audit", (_req, res) => {
+app.get("/v1/audit", requireAdminToken, (_req, res) => {
   res.json({ data: state.audit });
 });
 
