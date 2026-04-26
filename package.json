@@ -4,13 +4,14 @@
   "version": "0.1.0",
   "scripts": {
     "dev": "node scripts/run-native.mjs --dev",
-    "dev:native": "node scripts/run-native.mjs --dev",
     "dev:api": "npm --prefix apps/api run dev",
+    "dev:bridge-router": "npm --prefix apps/bridge-router run dev",
     "dev:bridge": "npm --prefix apps/host-bridge run dev",
     "start": "node scripts/run-native.mjs",
-    "start:native": "node scripts/run-native.mjs",
     "start:api": "npm --prefix apps/api run start",
+    "start:bridge-router": "npm --prefix apps/bridge-router run start",
     "start:bridge": "npm --prefix apps/host-bridge run start",
-    "install:native": "npm --prefix apps/api install --no-bin-links && npm --prefix apps/host-bridge install --no-bin-links"
+    "install:deps": "npm --prefix apps/api install --no-bin-links && npm --prefix apps/host-bridge install --no-bin-links && npm --prefix apps/bridge-router install --no-bin-links",
+    "install:linux": "npm run install:deps && bash scripts/install-ubuntu-systemd.sh"
   }
 }

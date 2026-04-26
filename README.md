@@ -1,14 +1,14 @@
 # LM Launch
 
-**Run multiple LM Studio instances in parallel, each pinned to its own GPUs, from one browser dashboard.**
+**Run multiple llama.cpp instances in parallel, each pinned to its own GPUs, from one browser dashboard.**
 
-LM Launch is a lightweight Node.js control plane and operator dashboard for multi-instance LM Studio deployments. It lets you partition a multi-GPU machine — assigning specific GPUs to specific models — and manage the full lifecycle of each instance (launch, reload, drain, restart, remove) from a single browser UI without touching a terminal.
+LM Launch is a lightweight Node.js control plane and operator dashboard for multi-instance llama.cpp deployments. It lets you partition a multi-GPU machine — assigning specific GPUs to specific models — and manage the full lifecycle of each instance (launch, reload, drain, restart, remove) from a single browser UI without touching a terminal.
 
-Each instance runs as an independent headless LM Studio server on its own port, with its own context window, queue limit, TTL, and GPU subset. LM Launch tracks state, catches crashes, and auto-restarts instances with configurable backoff.
+Each instance runs as an independent `llama-server` process on its own port, with its own context window, queue limit, TTL, and GPU subset. LM Launch tracks state, catches crashes, and auto-restarts instances with configurable backoff.
 
 **Key capabilities:**
 - Per-instance GPU pinning via `CUDA_VISIBLE_DEVICES` and equivalent env vars for AMD/Intel/Metal
-- Headless LM Studio server management (start, stop, reload, drain, force-stop)
+- Headless runtime process management (start, stop, drain, kill, remove)
 - **Built-in per-instance reverse proxy** — all instances bind to `127.0.0.1`; external clients connect through the API proxy endpoint at `http://host:8081/v1/instances/<id>/proxy/v1/...` so you only expose one port
 - Global API key enforcement — a single bearer token gates both the control-plane API and all proxy traffic; disable for open-access internal setups
 - GPU bleed detection via pre/post memory snapshots
@@ -16,7 +16,7 @@ Each instance runs as an independent headless LM Studio server on its own port, 
 - Config profiles — save a model + GPU + context + TTL combination and relaunch in one click
 - Token-authenticated API and bridge layers for deployment behind a reverse proxy
 
-LM Launch uses GGUF models through LM Studio's llama.cpp backend, so it works on NVIDIA (including older pre-Ampere cards), AMD, Apple Silicon, and CPU — no CUDA toolkit required.
+LM Launch uses GGUF models via llama.cpp's `llama-server` directly (no LM Studio required), so it works on NVIDIA (including older pre-Ampere cards), AMD, Apple Silicon, and CPU — no CUDA toolkit required.
 
 ## Dashboard
 
@@ -26,26 +26,15 @@ LM Launch uses GGUF models through LM Studio's llama.cpp backend, so it works on
 
 ### vs. LM Studio multi-instance (GUI)
 
-LM Studio's GUI is designed around a single interactive session. You can load multiple models but they share one server port and one GPU assignment strategy — you cannot pin specific GPUs per instance, enforce per-instance queue limits, or automate restarts. LM Launch runs fully headless, lets you assign exact GPUs to each instance, and exposes a unified API so an external router can treat the fleet as a pool.
+LM Studio's GUI is designed around a single interactive session. You can load multiple models but they share one server port and one GPU assignment strategy — you cannot pin specific GPUs per instance, enforce per-instance queue limits, or automate restarts. LM Launch runs fully headless `llama-server` processes, assigns exact GPUs to each instance, and exposes a unified API so an external router can treat the fleet as a pool.
 
 ### vs. vLLM
 
-vLLM is excellent for high-throughput serving of a single model on a single node. It does not support running dissimilar models concurrently on different GPU subsets from one control plane, has no built-in multi-instance orchestration UI, and requires Python + CUDA with matching driver versions. vLLM also has limited or no support for older NVIDIA GPUs (pre-Ampere cards like V100, GTX 10/20 series often hit capability gaps or produce incorrect results), and its quantization support is narrower — GGUF and many GGUF-based quant formats (IQ2, IQ3, Q4_K_S, etc.) are not natively supported, forcing you toward bitsandbytes or AWQ which have their own hardware and driver constraints. LM Launch uses GGUF models via LM Studio's llama.cpp backend, so it runs on any hardware LM Studio supports (NVIDIA including older cards, AMD, Apple Silicon, CPU) without a CUDA toolkit dependency and with the full range of GGUF quantization formats.
+vLLM is excellent for high-throughput serving of a single model on a single node. It does not support running dissimilar models concurrently on different GPU subsets from one control plane, has no built-in multi-instance orchestration UI, and requires Python + CUDA with matching driver versions. vLLM also has limited or no support for older NVIDIA GPUs (pre-Ampere cards like V100, GTX 10/20 series often hit capability gaps or produce incorrect results), and its quantization support is narrower — GGUF and many GGUF-based quant formats (IQ2, IQ3, Q4_K_S, etc.) are not natively supported. LM Launch spawns `llama-server` processes directly, so it runs on any hardware llama.cpp supports (NVIDIA including older cards, AMD, Apple Silicon, CPU) without a CUDA toolkit dependency and with the full range of GGUF quantization formats.
 
 ### vs. multiple llama.cpp processes
 
 Running `llama-server` manually on different ports works, but you have to manage process lifecycle, log tailing, GPU pinning, and health checks yourself. LM Launch wraps all of that: it enforces `CUDA_VISIBLE_DEVICES` and seven other device-visibility env vars per instance, runs pre/post memory snapshots to catch GPU bleed, monitors readiness, and can auto-restart crashed instances with configurable backoff — all from a browser UI.
-
-### Why not wrap llama.cpp directly instead of going through LM Studio?
-
-A fair question. The short answer is that LM Studio's `lms` CLI already solves a lot of hard problems that would need to be re-solved to wrap `llama-server` directly:
-
-- **Model discovery** — `lms` knows where your model library lives and resolves model IDs to file paths. Wrapping llama.cpp directly means you own path resolution, model scanning, and metadata parsing across GGUF split files.
-- **Runtime selection** — LM Studio ships and manages multiple llama.cpp builds (AVX2, CUDA, Metal, Vulkan, ROCm, etc.) and selects the right one for the hardware automatically. Doing this yourself means bundling or locating the right binary per platform.
-- **Build maintenance** — llama.cpp releases break API compatibility regularly. LM Studio tracks upstream and ships tested builds; you'd be on your own keeping a pinned or rolling llama.cpp build working across CUDA driver versions and OS updates.
-- **Context window and sampling defaults** — LM Studio applies per-model defaults (RoPE scaling, context limits, recommended sampler settings) derived from model metadata. Raw llama.cpp requires you to pass all of this explicitly or accept its own defaults.
-
-LM Launch treats LM Studio as a well-maintained runtime layer and focuses on the orchestration layer above it: fleet management, GPU partitioning, config profiles, health tracking, and the operator dashboard. If you want a minimal llama.cpp wrapper without the LM Studio dependency, that's a different project with a different set of tradeoffs.
 
 ### vs. SGLang
 
@@ -53,20 +42,11 @@ SGLang (from the LMSYS group) is a high-performance serving framework targeting 
 
 ### vs. GPUStack
 
-[GPUStack](https://github.com/gpustack/gpustack) is the closest conceptual peer — a Python-based GPU cluster manager that orchestrates vLLM and SGLang across multiple hosts. If you already run vLLM or SGLang and want cluster-level scheduling with a web UI, GPUStack is worth looking at. The key differences: GPUStack inherits vLLM/SGLang's hardware and quantization constraints (no GGUF, requires CUDA); it's oriented toward multi-host clusters rather than single-host GPU partitioning; and it's significantly heavier to deploy. LM Launch is a single-host tool that uses LM Studio as the runtime layer, trades cluster-scale for zero-CUDA simplicity and GGUF support.
+[GPUStack](https://github.com/gpustack/gpustack) is the closest conceptual peer — a Python-based GPU cluster manager that orchestrates vLLM and SGLang across multiple hosts. If you already run vLLM or SGLang and want cluster-level scheduling with a web UI, GPUStack is worth looking at. The key differences: GPUStack inherits vLLM/SGLang's hardware and quantization constraints (no GGUF, requires CUDA); it's oriented toward multi-host clusters rather than single-host GPU partitioning; and it's significantly heavier to deploy. LM Launch is a single-host tool that spawns `llama-server` processes directly, trades cluster-scale for zero-CUDA simplicity and GGUF support.
 
 ### vs. Ollama
 
 Ollama serializes requests to one model at a time per runtime and is optimized for single-user local use. It has no concept of pinning a model to a specific GPU subset, no queue depth control, and no multi-instance fleet view. LM Launch is designed specifically for the case where you have multiple GPUs and want different models running concurrently on different GPU subsets with independent ports, context windows, and TTLs.
-
-### Relationship to LM Studio LM Link and llmster
-
-LM Studio now ships two relevant features: **llmster** (headless mode — runs LM Studio without a GUI, ideal for servers) and **LM Link** (cross-device routing — routes inference requests to other machines running LM Studio on your local network). LM Launch is complementary to both:
-
-- LM Launch uses `lms` to drive `llmster`-style headless instances on a single host
-- LM Link can route to any OpenAI-compatible endpoint, so an LM Launch fleet (multiple instances across ports) can be placed behind LM Link for cross-device routing if needed
-
-LM Launch does not compete with LM Link. The two tools operate at different layers: LM Launch manages instances on one host; LM Link routes requests across hosts.
 
 ### When LM Launch makes sense
 
@@ -82,13 +62,12 @@ LM Launch does not compete with LM Link. The two tools operate at different laye
 
 Things that are currently out of scope or worth being aware of before adopting:
 
-- **Single-host only** — LM Launch manages instances on one machine. For multi-host GPU pools, combine it with LM Link (cross-device routing) or use GPUStack with vLLM/SGLang.
+- **Single-host only** — LM Launch manages instances on one machine. A bridge-router component exists for multi-host deployments (see `apps/bridge-router`) but multi-host is not the primary target.
 - **No Prometheus/metrics endpoint** — Per-instance token throughput, queue depth, and latency metrics are not yet exposed. This is a common ask in the llama.cpp and serving community; a `/metrics` endpoint is a natural addition.
-- **LM Studio as a dependency** — LM Studio (and its `lms` CLI) must be installed on the host. LM Launch does not manage LM Studio installation or updates.
-- **LM Studio GPU tensor split bug** — As of early 2026, LM Studio has a known issue where some dual-GPU configurations (e.g. 2× RTX PRO 5000 Blackwell) resolve tensor split incorrectly, producing garbage output or crashes. LM Launch assigns GPUs per-instance via environment variables; if LM Studio has a tensor split bug for a given card pairing, that bug will manifest regardless of LM Launch.
-- **No model download management** — LM Launch does not download or manage model files. Models must already be in your LM Studio model library. Use `lms get` or the LM Studio UI to download models.
-- **No authentication per-instance** — Individual instances are not directly reachable by external clients; they bind to `127.0.0.1` and are accessed exclusively through the LM Launch proxy at `/v1/instances/<id>/proxy/v1/...`. Auth is enforced by the global `API_AUTH_TOKEN` bearer token at the proxy layer. There is no per-instance key.
-- **No speculative decoding or prefix caching** — LM Launch relies on whatever llama.cpp runtime LM Studio provides. Advanced inference features like speculative decoding (draft model + verifier in one pass) or RadixAttention-style prefix caching (reusing KV cache across requests that share a system prompt) are not currently available through this stack. llama.cpp has experimental `--draft-model` support but LM Studio does not expose it via `lms` yet.
+- **`llama-server` binary required** — The host must have a `llama-server` binary on the path (or configured via `LLAMA_SERVER_BIN`). LM Launch does not bundle or build it. Get a binary from the [llama.cpp releases page](https://github.com/ggerganov/llama.cpp/releases) or build from source with `cmake -DGGML_CUDA=on`.
+- **No model download management** — LM Launch does not download or manage model files. Models must be present on the host filesystem and reachable via the path entered in the launch form.
+- **No authentication per-instance** — Individual instances bind to `127.0.0.1` and are accessed exclusively through the LM Launch proxy at `/v1/instances/<id>/proxy/v1/...`. Auth is enforced by the global `API_AUTH_TOKEN` bearer token at the proxy layer. There is no per-instance key.
+- **No speculative decoding or prefix caching** — LM Launch passes arguments through to `llama-server` verbatim. Advanced inference features like speculative decoding or RadixAttention-style prefix caching are outside the scope of this tool; pass the relevant `llama-server` flags via `runtimeArgs` if the binary supports them.
 
 ## Planned / TODO
 
@@ -101,6 +80,7 @@ Roughly prioritized:
 - [ ] **Reverse proxy / load balancer manifest** — emit a ready-made nginx/Caddy/Traefik config or a simple built-in round-robin proxy across healthy instances of the same model, so clients can hit one endpoint and LM Launch routes the request.
 - [ ] **Startup timeout and smoke check config** — currently readiness polling is fixed; expose timeout, retry interval, and expected response schema as per-instance options.
 - [ ] **Save as default template** — let users mark a launch configuration as the default so the form pre-fills on reload.
+- [ ] **llama.cpp build tooling** — the current bundled `llama-server` binary (`b760272`) shows a ~5% throughput gap vs. LM Studio's binary on V100 hardware. Investigate and document a reproducible build process for the latest llama.cpp (`cmake -DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES="70;86"`), benchmark against LM Studio, and consider packaging a prebuilt binary or build script in `scripts/` so fresh deployments don't rely on whatever version happens to be installed.
 
 ## Built-in Proxy
 
@@ -125,49 +105,62 @@ The proxy base URL for each instance is shown in the dashboard under the instanc
 
 ## Architecture
 
-LM Launch is two Node.js services:
+LM Launch is two core Node.js services (plus an optional bridge router for multi-host setups):
 
-- **API + dashboard** (`apps/api`, port `8081`) — serves the browser dashboard and REST API. Owns all state persistence (`state.json`) and config profiles. Communicates with the bridge to issue `lms` commands. Authenticates inbound requests via `API_AUTH_TOKEN`.
-- **Host bridge** (`apps/host-bridge`, port `8090`) — runs natively on the host machine and executes `lms` CLI commands, reads GPU state via `nvidia-smi`, and polls instance readiness. Authenticates requests from the API via `BRIDGE_AUTH_TOKEN`.
+- **API + dashboard** (`apps/api`, port `8081`) — serves the browser dashboard and REST API. Owns all state persistence (`state.json`) and config profiles. Forwards instance lifecycle commands to the bridge. Authenticates inbound requests via `API_AUTH_TOKEN`.
+- **Host bridge** (`apps/host-bridge`, port `8090`) — runs natively on the host and spawns `llama-server` child processes directly, one per instance. Sets `CUDA_VISIBLE_DEVICES` and six other device-visibility env vars per instance to enforce GPU pinning. Reads GPU state via `nvidia-smi` and polls instance readiness. Authenticates requests from the API via `BRIDGE_AUTH_TOKEN`.
+- **Bridge router** (`apps/bridge-router`, optional) — sits between the API and multiple host bridges. Useful when instances are spread across more than one physical machine. Configure via `BRIDGE_POOLS_JSON`.
 
-The bridge must run natively on the host (it shells out to `lms`). The API can run natively or in Docker as long as it can reach the bridge. The bridge communicates with LM Studio's `lms daemon` to start and stop server processes, and enforces per-instance GPU environment variables before each `lms server start` call.
+The bridge must run natively on the host (it spawns processes). The API can run anywhere that can reach the bridge.
+
+### systemd deployment (Ubuntu, no containers)
+
+One systemd unit runs everything. Each instance gets a dedicated `llama-server` child process pinned to its assigned GPUs.
+
+```bash
+sudo bash scripts/install-ubuntu-systemd.sh
+```
+
+- Service unit: `deploy/systemd/lmlaunch.service`
+- Env template: `deploy/systemd/env/lmlaunch.env.example` → `/etc/lmlaunch/lmlaunch.env`
+- Full runbook: `deploy/systemd/README.md`
 
 ## Dependencies
 
 Required:
 
-- Node.js 20+
-- LM Studio CLI/runtime (`lms`) available on host
+- Node.js 18+
+- `llama-server` binary on the host path, or path set via `LLAMA_SERVER_BIN`
+  - Get a pre-built binary from the [llama.cpp releases page](https://github.com/ggerganov/llama.cpp/releases)
+  - Or build from source: `cmake -B build -DGGML_CUDA=on && cmake --build build --target llama-server -j$(nproc)`
 
-If you want GPU visibility in LM Launch:
+For GPU visibility in the dashboard:
 
 - NVIDIA driver installed on host
-- `nvidia-smi` available on host path
+- `nvidia-smi` on the host path
 
 ## Quick Start (Native)
 
-1. Install dependencies:
+1. Install dependencies (uses `--no-bin-links` to avoid symlink failures on network shares):
 
 ```bash
-npm run install:native
+npm run install:deps
 ```
-
-> If running from a network share, this command sets `--no-bin-links` automatically to avoid symlink failures.
 
 2. Start all services:
 
 ```bash
-npm run start:native
+npm start
 ```
 
 3. Open **http://localhost:8081** — dashboard and API are both served from this port.
 
 ## Development
 
-Run all services with watch-enabled API and bridge:
+Run all services with file-watch restarts:
 
 ```bash
-npm run dev:native
+npm run dev
 ```
 
 Run individual services:
@@ -181,21 +174,36 @@ npm run start:api
 
 ### Shared
 
-- `API_AUTH_TOKEN` (optional; when unset, API auth is disabled)
-- `BRIDGE_AUTH_TOKEN` (optional; when unset, bridge auth is disabled)
+| Variable | Default | Description |
+|---|---|---|
+| `API_AUTH_TOKEN` | *(unset)* | Bearer token for dashboard + API. When unset, auth is disabled. |
+| `BRIDGE_AUTH_TOKEN` | *(unset)* | Internal API↔bridge token. When unset, bridge auth is disabled. |
 
-### API
+### API (`apps/api`)
 
-- `PORT` (default `8081`)
-- `BRIDGE_URL` (default `http://127.0.0.1:8090`)
-- `STATE_FILE` (default `./data/state.json`)
-- `SHARED_CONFIG_FILE` (default `./data/shared-config.yaml`)
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8081` | API + dashboard listen port |
+| `BRIDGE_URL` | `http://127.0.0.1:8090` | URL of the host bridge |
+| `STATE_FILE` | `./data/state.json` | Persistent state path |
+| `SHARED_CONFIG_FILE` | `./data/shared-config.yaml` | Shared config (profiles, security) |
+| `MODELS_DIR` | `~/.lmstudio/models` | Directory scanned for `.gguf` files |
+| `LM_LAUNCH_PUBLIC_HOST` | *(unset)* | This machine's IP, used in proxy URLs shown in the dashboard |
+| `CORS_ORIGIN` | `*` | Value of `Access-Control-Allow-Origin` |
 
-### Bridge
+### Bridge (`apps/host-bridge`)
 
-- `BRIDGE_PORT` (default `8090`)
-- `LOG_LINES_DEFAULT` (default `200`)
-- `READINESS_POLL_MS` (default `2000`)
+| Variable | Default | Description |
+|---|---|---|
+| `BRIDGE_PORT` | `8090` | Bridge listen port |
+| `LLAMA_SERVER_BIN` | `llama-server` | Path to the `llama-server` binary |
+| `DATA_ROOT` | `./data` | Root directory for logs and instance metadata |
+| `LOG_LINES_DEFAULT` | `200` | Default line count for log tail requests |
+| `READINESS_POLL_MS` | `2000` | How often to poll instance `/health` during startup |
+| `READINESS_HTTP_TIMEOUT_MS` | `5000` | Per-request timeout during readiness polling |
+| `GPU_BLEED_MAX_DELTA_MIB` | `256` | Max allowed post-stop VRAM increase before flagging bleed |
+| `SMOKE_CHECK_ENABLED` | `false` | Run a test inference after startup to verify the instance responds |
+| `STRICT_SMOKE_CHECK` | `false` | Treat a failed smoke check as a fatal startup error |
 - `READINESS_HTTP_TIMEOUT_MS` (default `5000`)
 - `SMOKE_CHECK_ENABLED` (`true` by default)
 

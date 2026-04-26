@@ -1,5 +1,5 @@
 {
-  "name": "@lmlaunch/host-bridge",
+  "name": "@lmlaunch/bridge-router",
   "version": "0.1.0",
   "private": true,
   "type": "module",

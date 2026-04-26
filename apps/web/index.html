@@ -21,7 +21,7 @@
       <div class="brand-block">
         <span class="badge">Multi-Instance Orchestrator</span>
         <h1>LM Launch</h1>
-        <p>Node-native launcher for parallel LM Studio workloads. Manage instances, models, and runtimes from one dashboard.</p>
+        <p>Node-native launcher for parallel llama.cpp workloads. Manage instances, models, and GPU assignments from one dashboard.</p>
       </div>
       <div class="topbar-actions">
         <div class="api-access-panel">
@@ -34,7 +34,7 @@
           <button id="saveGlobalApi" type="button" class="api-access-save">Apply</button>
         </div>
         <button id="openHelp" class="help-icon" type="button" aria-label="Open help" title="Open help">?</button>
-        <button id="closeAll" class="close-icon" type="button" aria-label="Close all instances" title="Unload instances and stop server">X</button>
+        <button id="closeAll" class="close-icon" type="button" aria-label="Close all instances" title="Unload instances and stop server">✕</button>
         <div id="globalApiStatus" class="status-chip">API access: checking...</div>
       </div>
     </header>
@@ -50,7 +50,7 @@
         </div>
 
         <div class="launch-box">
-          <h3 class="launch-title">Launch New Instance</h3>
+          <h3>Launch New Instance</h3>
           <div id="launchStatus" class="launch-status">Idle</div>
           <div class="launch-grid">
             <label class="launch-field launch-field-span-2">
@@ -68,20 +68,21 @@
               <input id="launchPort" type="number" value="1234" min="1" max="65535" class="launch-input" />
             </label>
             <label class="launch-field">
-              Hardware Runtime
+              Runtime
               <select id="launchRuntimeBackend" class="launch-input">
-                <option value="auto">Auto (detecting...)</option>
+                <option value="auto" selected>Auto</option>
+                <option value="cuda">CUDA</option>
+                <option value="cuda_full">CUDA (full offload)</option>
+                <option value="vulkan">Vulkan</option>
+                <option value="cpu">CPU</option>
               </select>
             </label>
-            <label class="launch-field launch-field-span-2">
+            <label class="launch-field launch-field-span-3">
               GPUs
               <select id="launchGpus" multiple class="launch-input launch-gpu-select">
               </select>
-              <small class="launch-field-help">Pick only the GPUs this instance can use.</small>
+              <small class="launch-field-help">Hold Ctrl / Cmd to select multiple. Leave empty to use all GPUs.</small>
             </label>
-            <div class="launch-field launch-field-span-4">
-              <small id="launchRuntimeDetail" class="launch-field-help">Detecting runtime versions...</small>
-            </div>
             <details class="launch-advanced launch-field-span-4">
               <summary>Advanced</summary>
               <div class="launch-advanced-grid">
@@ -116,6 +117,16 @@
                 <label class="launch-field">
                   Model TTL (sec)
                   <input id="launchModelTtl" type="number" min="1" placeholder="optional" class="launch-input" />
+                </label>
+                <label class="launch-field launch-field-span-3">
+                  Server Args
+                  <input id="launchServerArgs" type="text" value="--flash-attn on -b 2048 -ub 1024 --mlock -ctk q8_0 -ctv q8_0 -ngl 999" placeholder="e.g. --flash-attn on -b 2048" class="launch-input" />
+                  <small class="launch-field-help">Extra flags passed directly to llama-server. Separate with spaces.</small>
+                </label>
+                <label class="launch-field">
+                  Multimodal Proj (mmproj)
+                  <input id="launchMmproj" type="text" placeholder="auto-detect or paste path" class="launch-input" />
+                  <small class="launch-field-help">Optional. Path to mmproj GGUF for vision support.</small>
                 </label>
                 <label class="launch-field launch-field-span-2">
                   Auto Restart
@@ -157,7 +168,7 @@
         </div>
 
         <div class="instance-logs-panel">
-          <h3 class="launch-title">Instance Logs</h3>
+          <h3>Instance Logs</h3>
           <div class="instance-logs-controls">
             <label class="launch-field">
               Instance
@@ -197,8 +208,9 @@
             <button id="saveCurrentConfig">Save Current</button>
             <button id="loadSelectedConfig">Load Selected</button>
             <button id="deleteSelectedConfig" class="kill">Delete Selected</button>
-            <button id="exportCurrentConfig">Export Current YAML</button>
-            <button id="exportSelectedConfig">Export Selected YAML</button>
+            <button id="exportSelectedConfig">Download YAML</button>
+            <button id="importConfigYaml" class="copy">Import YAML</button>
+            <input type="file" id="importConfigYamlFile" accept=".yaml,.yml,application/yaml,text/plain" style="display:none" />
           </div>
         </div>
         <pre id="configLibraryResult"></pre>
@@ -211,9 +223,9 @@
       <form method="dialog" class="instance-test-form" id="instanceTestForm">
         <div class="instance-test-header">
           <h3 id="instanceTestTitle">Instance Diagnostic Test</h3>
-          <button type="button" id="instanceTestClose" class="instance-test-close" aria-label="Close diagnostic dialog">X</button>
+          <button type="button" id="instanceTestClose" class="instance-test-close" aria-label="Close diagnostic dialog">✕</button>
         </div>
-        <p id="instanceTestMeta" class="instance-test-meta">Target: -</p>
+        <pre id="instanceTestMeta" class="instance-test-meta">Target: -</pre>
 
         <label class="launch-field">
           Prompt
@@ -222,6 +234,7 @@
 
         <div class="instance-test-actions">
           <button type="button" id="instanceTestSend">Send Test Prompt</button>
+          <button type="button" id="instanceTestSpeedTest" class="copy">Speed Test (TPS)</button>
           <button type="button" id="instanceTestReset" class="copy">Reset Prompt</button>
         </div>
 

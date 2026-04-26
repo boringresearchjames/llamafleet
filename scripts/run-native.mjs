@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 
 const isWindows = process.platform === "win32";
-const npmCmd = isWindows ? "npm.cmd" : "npm";
+const npmCmd = "npm";
 const isDev = process.argv.includes("--dev");
 
 const services = [
@@ -33,6 +33,8 @@ function log(name, message) {
 
 for (const svc of services) {
   const child = spawn(svc.command, svc.args, {
+    shell: isWindows,
+    windowsHide: true,
     stdio: ["inherit", "pipe", "pipe"],
     env: { ...process.env, ...svc.env }
   });

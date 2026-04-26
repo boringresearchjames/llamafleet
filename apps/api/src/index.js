@@ -8,7 +8,7 @@ import yaml from "js-yaml";
 import { fileURLToPath } from "url";
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,6 +36,7 @@ const sharedConfigFile = process.env.SHARED_CONFIG_FILE || path.resolve(process.
 const apiAuthEnabled = Boolean(apiToken && apiToken !== "change-me");
 const bridgeAuthEnabled = Boolean(bridgeToken && bridgeToken !== "change-me");
 const publicHostOverride = String(process.env.LM_LAUNCH_PUBLIC_HOST || "").trim();
+const modelsDir = String(process.env.MODELS_DIR || "").trim() || path.join(os.homedir(), ".lmstudio", "models");
 
 if (!apiAuthEnabled) {
   console.warn("API auth disabled: API_AUTH_TOKEN not set.");
@@ -148,15 +149,16 @@ function toSharedConfig(state) {
 }
 
 function cleanRuntime(runtime) {
+  const rawArgs = Array.isArray(runtime?.serverArgs) && runtime.serverArgs.length > 0
+    ? runtime.serverArgs
+    : null;
+  // Migrate old LMS-style args ("server", "start", ...) to llama.cpp defaults
+  const isLmsArgs = Array.isArray(rawArgs) && rawArgs[0] === "server" && rawArgs[1] === "start";
   return {
-    target: "lms",
-    mode: "server",
-    serverArgs: Array.isArray(runtime?.serverArgs) && runtime.serverArgs.length > 0
-      ? runtime.serverArgs.map((x) => String(x))
-      : ["server", "start", "--port", "{port}"],
-    hardware: normalizeRuntimeBackend(runtime?.hardware || "auto"),
-    selection: runtime?.selection ? String(runtime.selection) : null,
-    label: runtime?.label ? String(runtime.label) : null
+    serverArgs: (!rawArgs || isLmsArgs)
+      ? ["--port", "{port}"]
+      : rawArgs.map((x) => String(x)),
+    hardware: normalizeRuntimeBackend(runtime?.hardware || "auto")
   };
 }
 
@@ -316,9 +318,7 @@ function validateSharedConfig(doc) {
       id: String(raw?.id || `prof_${Date.now()}_${Math.floor(Math.random() * 1000)}`),
       name,
       runtime: {
-        target: "lms",
-        mode: "server",
-        serverArgs: ["server", "start", "--port", "{port}"]
+        serverArgs: ["--port", "{port}"]
       },
       gpus: Array.isArray(raw?.gpus) ? raw.gpus.map((x) => String(x)) : [],
       host: String(raw?.host || "127.0.0.1"),
@@ -359,7 +359,7 @@ function parseRuntimeArgs(value) {
 
   const text = String(value || "").trim();
   if (!text) {
-    return ["server", "start", "--port", "{port}"];
+    return [];
   }
 
   const matches = text.match(/"([^"\\]*(\\.[^"\\]*)*)"|'([^'\\]*(\\.[^'\\]*)*)'|\S+/g) || [];
@@ -397,17 +397,6 @@ function parseBindHost(value) {
   return raw;
 }
 
-function normalizeInstanceApiKey(value) {
-  // dead code – kept as stub to avoid reference errors during cleanup
-  void value;
-  return null;
-}
-
-function generateInstanceApiKey() {
-  // dead code – kept as stub to avoid reference errors during cleanup
-  return null;
-}
-
 function isGlobalApiKeyRequired() {
   return apiAuthEnabled && state.settings?.security?.api?.requireApiKey !== false;
 }
@@ -427,7 +416,7 @@ function parseRestartPolicy(value = {}) {
 function normalizeRuntimeBackend(value) {
   const raw = String(value || "auto").trim().toLowerCase();
   if (raw === "valkun") return "vulkan";
-  if (["auto", "cuda", "cuda12", "cpu", "vulkan"].includes(raw)) return raw;
+  if (["auto", "cuda", "cuda_full", "cuda12", "cpu", "vulkan"].includes(raw)) return raw;
   return "auto";
 }
 
@@ -453,16 +442,7 @@ function nextUniqueInstanceId(baseId, existingIds = new Set()) {
   return `${baseId}-${suffix}`;
 }
 
-function backendFromRuntimeSelection(value) {
-  const raw = String(value || "").toLowerCase();
-  if (!raw) return null;
-  if (raw.includes(":cuda12") || raw.includes("cuda12")) return "cuda12";
-  if (raw.includes(":cuda") || raw.includes("cuda")) return "cuda";
-  if (raw.includes(":vulkan") || raw.includes("vulkan") || raw.includes("valkun")) return "vulkan";
-  if (raw.includes(":cpu") || raw.includes("cpu")) return "cpu";
-  if (raw.includes(":auto") || raw.includes("auto")) return "auto";
-  return null;
-}
+
 
 function getBearerToken(req) {
   const header = req.header("authorization") || "";
@@ -726,10 +706,241 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/help", (_req, res) => {
-  const readmeUrl =
-    process.env.HELP_README_URL ||
-    "https://github.com/boringresearchjames/lmlaunch/blob/main/README.md";
-  res.redirect(302, readmeUrl);
+  res.setHeader("content-type", "text/html; charset=utf-8");
+  res.send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LM Launch — API Reference</title>
+  <style>
+    body { font-family: "Segoe UI", system-ui, sans-serif; background: #06070b; color: #e7eeff; margin: 0; padding: 32px; line-height: 1.6; }
+    h1 { font-size: 28px; margin: 0 0 4px; }
+    h2 { font-size: 16px; margin: 28px 0 8px; color: #7df8dd; border-bottom: 1px solid rgba(125,248,221,0.2); padding-bottom: 4px; }
+    h3 { font-size: 13px; margin: 16px 0 4px; color: #9fb0d8; }
+    p, li { font-size: 13px; color: #c4d2f4; margin: 4px 0; }
+    code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; background: rgba(92,165,255,0.12); padding: 1px 5px; border-radius: 4px; color: #9dd8ff; }
+    pre { background: rgba(5,8,19,0.8); border: 1px solid rgba(159,176,216,0.2); border-radius: 8px; padding: 12px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; color: #c4d2f4; overflow-x: auto; }
+    .muted { color: #9fb0d8; }
+    .endpoint { margin-bottom: 18px; }
+    .method { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 700; margin-right: 6px; font-family: monospace; }
+    .get  { background: rgba(76,219,142,0.2); color: #4cdb8e; }
+    .post { background: rgba(92,165,255,0.2); color: #5ca5ff; }
+    .put  { background: rgba(255,190,92,0.2); color: #ffbe5c; }
+    .del  { background: rgba(255,92,122,0.2); color: #ff5c7a; }
+    a { color: #5ca5ff; }
+    .section { max-width: 860px; margin: 0 auto; }
+    .subtitle { color: #9fb0d8; font-size: 14px; margin: 0 0 24px; }
+    .badge-admin { font-size: 10px; background: rgba(255,190,92,0.15); color: #ffbe5c; border: 1px solid rgba(255,190,92,0.3); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
+  </style>
+</head>
+<body>
+<div class="section">
+  <h1>LM Launch</h1>
+  <p class="subtitle">API reference. All endpoints require <code>Authorization: Bearer &lt;token&gt;</code> when auth is enabled. Endpoints marked <span class="badge-admin">admin</span> require the server API token.</p>
+
+  <h2>Auth</h2>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/auth/login</code>
+    <p>Exchange username + password for a session token (only when user auth is enabled).</p>
+    <pre>{ "username": "alice", "password": "..." }
+→ { "token": "...", "tokenType": "Bearer", "expiresAt": "...", "username": "alice" }</pre>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/auth/logout</code>
+    <p>Invalidate the current Bearer session token.</p>
+  </div>
+
+  <h2>Instances</h2>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/instances</code>
+    <p>List all instances with state, runtime info, and live GPU telemetry. Returns <code>{ data: [...], gpus: [...] }</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/instances/start</code>
+    <p>Launch a new instance. <code>name</code>, <code>model</code>, and <code>port</code> are required. <code>gpus</code> is required for non-CPU backends.</p>
+    <pre>{
+  "name": "my-instance",          // required — display name
+  "model": "/path/to/model.gguf", // required
+  "port": 1234,                   // required
+  "gpus": ["0", "1"],             // required for cuda/metal backends
+  "runtimeBackend": "cuda_full",  // "auto" | "cuda_full" | "cpu"  (default "auto")
+  "runtimeArgs": ["--flash-attn", "on", "-c", "8192"],
+  "contextLength": 8192,          // integer or "auto"
+  "instanceId": "my-id",          // optional — auto-generated UUID if omitted
+  "host": "127.0.0.1",            // optional listen host  (default 127.0.0.1)
+  "maxInflightRequests": 4,       // optional  (default 4, max 1024)
+  "queueLimit": 64,               // optional  (default 64)
+  "modelTtlSeconds": 300,         // optional — evict idle model after N seconds
+  "modelParallel": 2,             // optional — parallel model slots
+  "restartPolicy": { "mode": "on-failure", "maxRetries": 2, "backoffMs": 3000 }
+}</pre>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/instances/:id/stop</code>
+    <p>Gracefully stop an instance.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/instances/:id/kill</code>
+    <p>Force-kill an instance immediately. Body: <code>{ "reason": "optional string" }</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method del">DEL</span><code>/v1/instances/:id</code>
+    <p>Stop (if running) and remove an instance from state.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/instances/:id/drain</code>
+    <p>Pause or resume request intake. Body: <code>{ "enabled": true }</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/instances/:id/model</code>
+    <p>Hot-swap the model on a running instance.</p>
+    <pre>{
+  "model": "/path/to/new-model.gguf",  // required
+  "applyMode": "next_restart"          // "next_restart" (default) | "restart_now"
+}</pre>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/instances/:id/logs</code>
+    <p>Tail instance logs. Query: <code>?lines=200</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/instances/:id/connection</code>
+    <p>Returns copy-ready direct and proxied URLs plus current model fields for an instance.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/instances/:id/proxy/v1/...</code>
+    <p>OpenAI-compatible reverse proxy to the instance. Errors are returned as <code>{ error: { message, type, param, code } }</code>.</p>
+    <pre>curl http://localhost:8081/v1/instances/my-instance/proxy/v1/chat/completions \\
+  -H "Authorization: Bearer &lt;token&gt;" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"...", "messages":[{"role":"user","content":"Hello"}]}'</pre>
+  </div>
+
+  <h2>Manifest</h2>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/manifest/ready</code>
+    <p>Returns all <em>ready</em> (non-draining) instances with routing policy and capacity fields. Designed for load-balancer or agent use.</p>
+  </div>
+
+  <h2>Profiles</h2>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/profiles</code>
+    <p>List saved launch profiles. Returns <code>{ data: [...] }</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/profiles</code>
+    <p>Create a launch profile. Body mirrors the instance start schema; <code>name</code> is required.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method del">DEL</span><code>/v1/profiles/:id</code>
+    <p>Delete a saved profile.</p>
+  </div>
+
+  <h2>Config Library</h2>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/instance-configs</code>
+    <p>List all saved configs. Returns <code>{ data: [...] }</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/instance-configs/:id</code>
+    <p>Get a single saved config by ID.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/instance-configs/save-current</code>
+    <p>Save current running instances as a named config. Body: <code>{ "name": "My Config", "id": "optional-id" }</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/instance-configs/:id/load</code>
+    <p>Launch all instances from a saved config.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/instance-configs/current/export.yaml</code>
+    <p>Export the current running instances as YAML (not saved to library).</p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/instance-configs/:id/export.yaml</code>
+    <p>Download a saved config as YAML.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/instance-configs/import.yaml</code>
+    <p>Import a config from YAML. Body: YAML text, <code>Content-Type: application/yaml</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method del">DEL</span><code>/v1/instance-configs/:id</code>
+    <p>Delete a saved config.</p>
+  </div>
+
+  <h2>System</h2>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/gpus</code>
+    <p>List detected GPUs with VRAM usage via bridge.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/local-models</code>
+    <p>List GGUF model files on the host. Returns <code>{ data: [{ id, name, shards }], dir }</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/audit</code>
+    <p>Retrieve the audit log. Returns <code>{ data: [...] }</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/health</code>
+    <p>Health check. Returns <code>{ status: "ok", service: "api", at: "..." }</code>. No auth required.</p>
+  </div>
+
+  <h2>Agent Interface</h2>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/agent/capabilities</code>
+    <p>Describe available agent actions and their input/output schemas.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/agent/action</code>
+    <p>Execute a named agent action. Body: <code>{ "action": "instances.start", "input": { ... } }</code></p>
+    <p>Actions: <code>manifest.ready</code>, <code>profiles.list</code>, <code>instances.list</code>, <code>instances.start</code>, <code>instances.stop</code>, <code>instances.kill</code>, <code>instances.drain</code>, <code>instances.switchModel</code>, <code>instances.logs</code>, <code>instances.connection</code></p>
+  </div>
+
+  <h2>Admin</h2>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/settings/security</code> <span class="badge-admin">admin</span>
+    <p>Get current security settings (auth, TLS, API key policy).</p>
+  </div>
+  <div class="endpoint">
+    <span class="method put">PUT</span><code>/v1/settings/security</code> <span class="badge-admin">admin</span>
+    <p>Update security settings.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/users</code> <span class="badge-admin">admin</span>
+    <p>List local users.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/users</code> <span class="badge-admin">admin</span>
+    <p>Create a local user. Body: <code>{ "username": "alice", "password": "..." }</code></p>
+  </div>
+  <div class="endpoint">
+    <span class="method del">DEL</span><code>/v1/users/:username</code> <span class="badge-admin">admin</span>
+    <p>Delete a local user.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/config/export.yaml</code> <span class="badge-admin">admin</span> &nbsp;
+    <span class="method post">POST</span><code>/v1/config/import.yaml</code> <span class="badge-admin">admin</span>
+    <p>Export or import the full server config (security settings, profiles) as YAML. Import supports <code>?dryRun=true</code>.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/config/status</code> <span class="badge-admin">admin</span>
+    <p>Config sync status — current hash and last import timestamps.</p>
+  </div>
+  <div class="endpoint">
+    <span class="method get">GET</span><code>/v1/system/gpus</code> <span class="badge-admin">admin</span>
+    <p>GPU list via bridge (admin-gated variant of <code>/v1/gpus</code>).</p>
+  </div>
+  <div class="endpoint">
+    <span class="method post">POST</span><code>/v1/system/close</code> <span class="badge-admin">admin</span>
+    <p>Graceful shutdown. Body: <code>{ "unloadModels": true, "stopDaemon": true }</code></p>
+  </div>
+</div>
+</body>
+</html>`);
 });
 
 if (fs.existsSync(webRoot)) {
@@ -911,9 +1122,9 @@ app.post("/v1/instance-configs/:id/load", async (req, res) => {
         modelParallel: parseOptionalPositiveInteger(item.modelParallel),
         restartPolicy: parseRestartPolicy(item.restartPolicy),
         runtimeBackend: item.runtime?.hardware || "auto",
-        runtimeSelection: item.runtime?.selection || "",
-        runtimeLabel: item.runtime?.label || "",
-        runtimeArgs: item.runtime?.serverArgs || ["server", "start", "--port", "{port}"],
+        runtimeArgs: Array.isArray(item.runtime?.serverArgs) && item.runtime.serverArgs.length > 0
+          ? item.runtime.serverArgs
+          : ["--port", "{port}"],
         contextLength: item.contextLength ?? "auto",
         instanceId: requestedInstanceId
       };
@@ -941,6 +1152,49 @@ app.post("/v1/instance-configs/:id/load", async (req, res) => {
     failed
   });
 });
+
+app.post(
+  "/v1/instance-configs/import.yaml",
+  requireAdminToken,
+  express.text({
+    type: ["application/yaml", "text/yaml", "application/x-yaml", "text/plain"],
+    limit: "2mb"
+  }),
+  (req, res) => {
+    const raw = String(req.body || "");
+    if (!raw.trim()) {
+      return res.status(400).json({ error: "YAML body is required" });
+    }
+    let parsed;
+    try {
+      parsed = yaml.load(raw);
+    } catch (error) {
+      return res.status(400).json({ error: `Invalid YAML: ${String(error.message || error)}` });
+    }
+    if (!parsed || typeof parsed !== "object") {
+      return res.status(400).json({ error: "YAML must be an object" });
+    }
+    const payload = sanitizeInstanceConfigPayload(parsed);
+    if (payload.instances.length === 0) {
+      return res.status(400).json({ error: "config must contain at least one valid instance" });
+    }
+    const nowTs = now();
+    const existingIndex = state.instanceConfigs.findIndex((x) => x.id === payload.id);
+    const next = {
+      ...payload,
+      createdAt: existingIndex >= 0 ? state.instanceConfigs[existingIndex].createdAt : nowTs,
+      updatedAt: nowTs
+    };
+    if (existingIndex >= 0) {
+      state.instanceConfigs[existingIndex] = next;
+    } else {
+      state.instanceConfigs.unshift(next);
+    }
+    saveState(state);
+    audit("instance_config.import_yaml", { id: next.id, name: next.name, instances: next.instances.length });
+    return res.status(201).json(next);
+  }
+);
 
 app.get("/v1/instance-configs/current/export.yaml", (req, res) => {
   const current = {
@@ -1159,18 +1413,12 @@ app.post("/v1/profiles", (req, res) => {
     return res.status(400).json({ error: "name is required" });
   }
 
-  if (payload.runtimeTarget && payload.runtimeTarget !== "lms") {
-    return res.status(400).json({ error: "runtimeTarget must be 'lms'" });
-  }
-
   const id = payload.id || `prof_${Date.now()}`;
   const profile = {
     id,
     name: payload.name,
     runtime: {
-      target: "lms",
-      mode: "server",
-      serverArgs: ["server", "start", "--port", "{port}"]
+      serverArgs: ["--port", "{port}"]
     },
     gpus: Array.isArray(payload.gpus) ? payload.gpus : [],
     host: payload.host || "127.0.0.1",
@@ -1217,14 +1465,14 @@ app.get("/v1/instances", async (_req, res) => {
       const runtimeQueueDepth = Number(runtime?.queueDepth);
       const localInflight = Number(inst.inflightRequests || 0);
       const localQueueDepth = Number(inst.queueDepth || 0);
-      const mergedInflight = Math.max(
-        Number.isFinite(runtimeInflight) ? runtimeInflight : 0,
-        Number.isFinite(localInflight) ? localInflight : 0
-      );
-      const mergedQueueDepth = Math.max(
-        Number.isFinite(runtimeQueueDepth) ? runtimeQueueDepth : 0,
-        Number.isFinite(localQueueDepth) ? localQueueDepth : 0
-      );
+      // Prefer bridge runtime counters when available so stale local cache values
+      // do not keep an instance stuck in "Processing" after requests complete.
+      const mergedInflight = runtime
+        ? (Number.isFinite(runtimeInflight) ? Math.max(0, runtimeInflight) : 0)
+        : (Number.isFinite(localInflight) ? Math.max(0, localInflight) : 0);
+      const mergedQueueDepth = runtime
+        ? (Number.isFinite(runtimeQueueDepth) ? Math.max(0, runtimeQueueDepth) : 0)
+        : (Number.isFinite(localQueueDepth) ? Math.max(0, localQueueDepth) : 0);
       const assignedGpus = Array.isArray(inst.gpus) ? inst.gpus.map((g) => String(g)) : [];
       const gpuStats = assignedGpus
         .map((id) => gpuById.get(id))
@@ -1243,8 +1491,6 @@ app.get("/v1/instances", async (_req, res) => {
         ...inst,
         pid: runtime?.pid || null,
         state: runtime?.state || "stopped",
-        apiKeyApplied: false,
-        instanceApiKey: null,
         inflightRequests: mergedInflight,
         queueDepth: mergedQueueDepth,
         gpuStats,
@@ -1258,8 +1504,6 @@ app.get("/v1/instances", async (_req, res) => {
 
   const data = state.instances.map((inst) => ({
     ...inst,
-    apiKeyApplied: false,
-    instanceApiKey: null,
     advertisedHost: resolveAdvertisedHost(inst),
     baseUrl: instancePublicBaseUrl(inst),
     proxyBaseUrl: `${apiBase}/v1/instances/${encodeURIComponent(inst.id)}/proxy/v1`
@@ -1276,11 +1520,8 @@ app.post("/v1/instances/start", async (req, res) => {
   const modelToUse = String(req.body?.model || "").trim();
   const runtimeArgs = parseRuntimeArgs(req.body?.runtimeArgs);
   const contextLength = parseContextLength(req.body?.contextLength);
-  const runtimeSelection = String(req.body?.runtimeSelection || "").trim();
-  const runtimeLabel = String(req.body?.runtimeLabel || "").trim();
   const bindHost = parseBindHost(req.body?.bindHost);
-  const selectionBackend = backendFromRuntimeSelection(runtimeSelection);
-  const runtimeBackend = normalizeRuntimeBackend(req.body?.runtimeBackend || selectionBackend || "auto");
+  const runtimeBackend = normalizeRuntimeBackend(req.body?.runtimeBackend || "auto");
   const launchGpus = Array.isArray(req.body?.gpus)
     ? req.body.gpus.map((g) => String(g))
       : [];
@@ -1300,8 +1541,9 @@ app.post("/v1/instances/start", async (req, res) => {
   }
 
   const usedIds = new Set(state.instances.map((x) => String(x.id)));
-  const baseId = requestedId || toInstanceId(name);
-  const instanceId = nextUniqueInstanceId(baseId, usedIds);
+  const instanceId = requestedId
+    ? nextUniqueInstanceId(toInstanceId(requestedId), usedIds)
+    : crypto.randomUUID();
 
   const activeInstances = state.instances.filter((x) => x.state !== "stopped");
   const portConflict = activeInstances.find(
@@ -1340,12 +1582,8 @@ app.post("/v1/instances/start", async (req, res) => {
     id: null,
     name,
     runtime: {
-      target: "lms",
-      mode: "server",
       serverArgs: runtimeArgs,
-      hardware: runtimeBackend,
-      selection: runtimeSelection || null,
-      label: runtimeLabel || runtimeSelection || null
+      hardware: runtimeBackend
     },
     host: launchHost,
     bindHost,
@@ -1373,18 +1611,12 @@ app.post("/v1/instances/start", async (req, res) => {
     host: launchHost,
     bindHost,
     port: launchPort,
-    instanceApiKey: null,
-    apiKeyApplied: false,
     state: "starting",
     pid: null,
     gpus: usesGpu ? launchGpus : [],
     runtime: {
-      target: "lms",
-      mode: "server",
       serverArgs: runtimeArgs,
-      hardware: runtimeBackend,
-      selection: runtimeSelection || null,
-      label: runtimeLabel || null
+      hardware: runtimeBackend
     },
     contextLength,
     maxInflightRequests,
@@ -1429,8 +1661,6 @@ app.post("/v1/instances/start", async (req, res) => {
       ...(idx >= 0 ? state.instances[idx] : provisional),
       state: launch.state || "starting",
       pid: launch.pid || null,
-      apiKeyApplied: false,
-      instanceApiKey: null,
       lastError: null,
       updatedAt: now()
     };
@@ -1542,11 +1772,7 @@ app.post("/v1/instances/:id/model", (req, res) => {
     {
       id: null,
       name: instance.profileName || instance.id,
-      runtime: instance.runtime || {
-        target: "lms",
-        mode: "server",
-        serverArgs: ["server", "start", "--port", "{port}"]
-      },
+      runtime: cleanRuntime(instance.runtime),
       host: instance.host || "127.0.0.1",
       port: instance.port,
       gpus: Array.isArray(instance.gpus) ? instance.gpus : [],
@@ -1600,11 +1826,11 @@ app.post("/v1/instances/:id/model", (req, res) => {
 
 app.all("/v1/instances/:id/proxy/*", async (req, res) => {
   const instance = state.instances.find((x) => x.id === req.params.id);
-  if (!instance) return res.status(404).json({ error: "instance not found" });
+  if (!instance) return res.status(404).json({ error: { message: "instance not found", type: "invalid_request_error", param: "id", code: "instance_not_found" } });
 
   const tailPath = String(req.params[0] || "").replace(/^\/+/, "");
   if (!tailPath) {
-    return res.status(400).json({ error: "proxy path is required (e.g. /v1/chat/completions)" });
+    return res.status(400).json({ error: { message: "proxy path is required (e.g. /v1/chat/completions)", type: "invalid_request_error", param: null, code: null } });
   }
 
   const queryIndex = String(req.originalUrl || "").indexOf("?");
@@ -1627,7 +1853,14 @@ app.all("/v1/instances/:id/proxy/*", async (req, res) => {
   }
 
   const abortController = new AbortController();
-  req.on("close", () => {
+  // `req.close` fires after request body completion for normal POSTs; using it
+  // would cancel healthy upstream inference calls. Abort only on real disconnects.
+  req.on("aborted", () => {
+    if (!res.writableEnded) {
+      abortController.abort();
+    }
+  });
+  res.on("close", () => {
     if (!res.writableEnded) {
       abortController.abort();
     }
@@ -1711,7 +1944,7 @@ app.all("/v1/instances/:id/proxy/*", async (req, res) => {
     if (abortController.signal.aborted) {
       return;
     }
-    res.status(502).json({ error: "proxy request failed", detail: String(error.message || error) });
+    res.status(502).json({ error: { message: String(error.message || error), type: "server_error", param: null, code: "upstream_error" } });
   }
 });
 
@@ -1801,6 +2034,42 @@ app.get("/v1/instances/:id/connection", (req, res) => {
     effective_model: instance.effectiveModel,
     pending_model: instance.pendingModel || null
   });
+});
+
+app.get("/v1/local-models", (_req, res) => {
+  const results = [];
+  const scanDir = path.resolve(modelsDir.replace(/^~/, os.homedir()));
+
+  function walk(dir) {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".gguf")) {
+        const lower = entry.name.toLowerCase();
+        // Skip non-first shards: files matching -NNNNN-of-NNNNN.gguf where NNNNN != 00001
+        const shardMatch = lower.match(/-(\d{5})-of-(\d{5})\.gguf$/);
+        if (shardMatch && shardMatch[1] !== "00001") continue;
+        const rel = path.relative(scanDir, fullPath);
+        const shards = shardMatch ? parseInt(shardMatch[2], 10) : null;
+        results.push({ id: fullPath, name: rel, shards });
+      }
+    }
+  }
+
+  if (!fs.existsSync(scanDir)) {
+    return res.json({ data: [], warning: `Models directory not found: ${scanDir}` });
+  }
+
+  walk(scanDir);
+  results.sort((a, b) => a.name.localeCompare(b.name));
+  return res.json({ data: results, dir: scanDir });
 });
 
 app.get("/v1/audit", (_req, res) => {
@@ -1974,27 +2243,6 @@ app.post("/v1/agent/action", async (req, res) => {
   }
 });
 
-app.get("/v1/lmstudio/models", async (_req, res) => {
-  try {
-    const lmStudioPort = process.env.LMSTUDIO_PORT || 1234;
-    const lmStudioHost = process.env.LMSTUDIO_HOST || "127.0.0.1";
-    const data = await bridgeFetch(
-      "GET",
-      `/v1/models?host=${encodeURIComponent(String(lmStudioHost))}&port=${encodeURIComponent(String(lmStudioPort))}`
-    );
-    const models = Array.isArray(data.data)
-      ? data.data.map((m) => ({ id: m.id, name: m.id }))
-      : [];
-
-    res.json({ models });
-  } catch (error) {
-    res.status(503).json({
-      error: "LM Studio connection failed",
-      message: String(error.message || error)
-    });
-  }
-});
-
 app.get("/v1/system/gpus", requireAdminToken, async (req, res) => {
   try {
     const data = await bridgeFetch("GET", "/v1/gpus");
@@ -2002,18 +2250,6 @@ app.get("/v1/system/gpus", requireAdminToken, async (req, res) => {
   } catch (error) {
     res.status(503).json({
       error: "GPU detection failed",
-      message: String(error.message || error)
-    });
-  }
-});
-
-app.get("/v1/system/runtime-backends", requireAdminToken, async (_req, res) => {
-  try {
-    const data = await bridgeFetch("GET", "/v1/runtime/backends");
-    res.json(data);
-  } catch (error) {
-    res.status(503).json({
-      error: "runtime backend detection failed",
       message: String(error.message || error)
     });
   }

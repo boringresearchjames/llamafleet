@@ -1,5 +1,35 @@
+const DEFAULT_LOCAL_API_BASE = "http://localhost:8081";
+
+function normalizeApiBase(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.replace(/\/$/, "");
+}
+
+function resolveInitialApiBase() {
+  const params = new URLSearchParams(window.location.search || "");
+  const queryBase = normalizeApiBase(params.get("apiBase"));
+  const storedBase = normalizeApiBase(localStorage.getItem("apiBase") || "");
+
+  if (queryBase) {
+    localStorage.setItem("apiBase", queryBase);
+    return queryBase;
+  }
+
+  if (storedBase) {
+    return storedBase;
+  }
+
+  const origin = normalizeApiBase(window.location.origin);
+  if (window.location.protocol !== "file:" && origin && origin !== "null") {
+    return origin;
+  }
+
+  return DEFAULT_LOCAL_API_BASE;
+}
+
 const settings = {
-  apiBase: window.location.origin,
+  apiBase: resolveInitialApiBase(),
   token: localStorage.getItem("apiToken") || ""
 };
 
@@ -21,7 +51,6 @@ function syncGlobalApiTokenInput() {
 
 let instancesCache = [];
 let gpuTelemetryCache = [];
-let runtimeBackendsCache = [];
 let operationPending = null;
 let operationStatusTimer = null;
 let instanceTestTargetId = null;
@@ -201,9 +230,29 @@ async function refreshGlobalApiAccess() {
 }
 
 function copy(value) {
-  navigator.clipboard.writeText(value)
-    .then(() => toast(`Copied: ${value}`))
-    .catch(() => toast("Copy failed — clipboard not available"));
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(value)
+      .then(() => toast(`Copied: ${value.slice(0, 80)}`))
+      .catch(() => copyFallback(value));
+  } else {
+    copyFallback(value);
+  }
+}
+function copyFallback(value) {
+  const ta = document.createElement('textarea');
+  ta.value = value;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand('copy');
+    toast(`Copied: ${value.slice(0, 80)}`);
+  } catch (e) {
+    toast('Copy failed');
+  }
+  document.body.removeChild(ta);
 }
 
 function closeInstanceTestDialog() {
@@ -232,7 +281,17 @@ function openInstanceTestDialog(instanceId) {
   }
 
   instanceTestTargetId = String(instanceId);
-  meta.textContent = `Target: ${inst.id} • model ${inst.effectiveModel || "unknown"} • port ${inst.port}`;
+  const serverArgs = Array.isArray(inst.runtime?.serverArgs) && inst.runtime.serverArgs.length > 0
+    ? inst.runtime.serverArgs.join(' ')
+    : '(none)';
+  const ctxLen = inst.contextLength != null ? String(inst.contextLength) : 'auto';
+  const gpuList = Array.isArray(inst.gpus) && inst.gpus.length > 0 ? inst.gpus.join(', ') : 'none';
+  const backend = inst.runtime?.hardware || 'auto';
+  meta.textContent = [
+    `id: ${inst.id}  •  model: ${inst.effectiveModel || 'unknown'}  •  port: ${inst.port}`,
+    `server args: ${serverArgs}`,
+    `context: ${ctxLen}  •  backend: ${backend}  •  gpus: ${gpuList}`
+  ].join('\n');
   result.textContent = "Ready. Click Send Test Prompt.";
 
   if (typeof dialog.showModal === "function") {
@@ -401,6 +460,126 @@ async function sendInstanceDiagnosticPrompt() {
   }
 }
 
+async function runInstanceSpeedTest() {
+  const result = $('instanceTestResult');
+  const sendBtn = $('instanceTestSend');
+  const speedBtn = $('instanceTestSpeedTest');
+  const targetId = String(instanceTestTargetId || '').trim();
+
+  if (!targetId) { toast('Select an instance first'); return; }
+
+  const inst = instancesCache.find((x) => String(x.id) === targetId);
+  if (!inst) { toast('Instance not found'); return; }
+
+  const modelId = String(inst.effectiveModel || inst.pendingModel || '').trim();
+  if (!modelId) { toast('Instance model is unknown; cannot run speed test'); return; }
+
+  if (sendBtn) sendBtn.disabled = true;
+  if (speedBtn) speedBtn.disabled = true;
+  result.textContent = 'Running speed test — streaming 300 tokens...';
+
+  const payload = {
+    model: modelId,
+    messages: [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Write a detailed, thorough explanation of how transformer neural networks work, covering self-attention, positional encoding, feed-forward layers, and training.' }
+    ],
+    temperature: 0.7,
+    max_tokens: 300,
+    stream: true,
+    stream_options: { include_usage: true }
+  };
+
+  const startMs = Date.now();
+  let firstTokenMs = null;
+  let lastTokenMs = null;
+  let chunkCount = 0;
+  let fullText = '';
+  let usage = null;
+
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (settings.token) headers['Authorization'] = `Bearer ${settings.token}`;
+    const url = `${settings.apiBase}/v1/instances/${encodeURIComponent(targetId)}/proxy/v1/chat/completions`;
+
+    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errText.slice(0, 200)}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (raw === '[DONE]') continue;
+        try {
+          const chunk = JSON.parse(raw);
+          if (chunk.usage) usage = chunk.usage;
+          const delta = chunk?.choices?.[0]?.delta?.content;
+          if (typeof delta === 'string' && delta.length > 0) {
+            if (firstTokenMs === null) firstTokenMs = Date.now();
+            lastTokenMs = Date.now();
+            chunkCount++;
+            fullText += delta;
+          }
+        } catch { /* ignore malformed chunks */ }
+      }
+    }
+
+    const totalMs = Date.now() - startMs;
+    const ttftMs = firstTokenMs !== null ? firstTokenMs - startMs : null;
+    const genMs = (firstTokenMs !== null && lastTokenMs !== null) ? (lastTokenMs - firstTokenMs) : totalMs;
+
+    const completionTokens = usage?.completion_tokens ?? chunkCount;
+    const promptTokens = usage?.prompt_tokens ?? 'n/a';
+    const tps = (genMs > 100 && completionTokens > 0)
+      ? (completionTokens / (genMs / 1000)).toFixed(2)
+      : 'n/a';
+    const modelBasename = modelId.split('/').pop().split('\\').pop();
+
+    result.textContent = [
+      '=== SPEED TEST RESULTS ===',
+      '',
+      `  tokens/sec (gen):  ${tps} tok/s`,
+      `  time to 1st token: ${ttftMs !== null ? ttftMs + ' ms' : 'n/a'}`,
+      `  total latency:     ${totalMs} ms`,
+      `  completion tokens: ${completionTokens}`,
+      `  prompt tokens:     ${promptTokens}`,
+      `  generation time:   ${genMs} ms`,
+      '',
+      `  instance: ${targetId}`,
+      `  model: ${modelBasename}`,
+      '',
+      '--- response preview (first 300 chars) ---',
+      fullText.trim().slice(0, 300) || '(empty)'
+    ].join('\n');
+    toast(`Speed test done: ${tps} tok/s`);
+  } catch (error) {
+    const elapsed = Date.now() - startMs;
+    result.textContent = [
+      'status: speed test failed',
+      `instance: ${targetId}`,
+      `elapsed_ms: ${elapsed}`,
+      '',
+      `error: ${error.message}`
+    ].join('\n');
+    toast(`Speed test failed: ${error.message}`);
+  } finally {
+    if (sendBtn) sendBtn.disabled = false;
+    if (speedBtn) speedBtn.disabled = false;
+  }
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -408,6 +587,17 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+// Show only the last 3 path segments (author/repo/file.gguf) for display
+function trimModelPath(modelPath) {
+  const parts = String(modelPath).replace(/\\/g, "/").split("/");
+  return parts.length > 3 ? parts.slice(-3).join("/") : modelPath;
+}
+
+// Trim all absolute file paths within an args string to last 3 segments
+function trimArgsModelPaths(args) {
+  return String(args).replace(/\/[^\s]+\.gguf/g, (match) => trimModelPath(match));
 }
 
 function parseContextLengthInput() {
@@ -443,12 +633,12 @@ function parseOptionalPositiveIntegerInput(id) {
 function normalizeRuntimeBackend(value) {
   const raw = String(value || "auto").trim().toLowerCase();
   if (raw === "valkun") return "vulkan";
-  if (raw.includes("cuda12")) return "cuda12";
+  if (raw === "cuda_full" || raw.includes("cuda12")) return "cuda_full";
   if (raw.includes("cuda")) return "cuda";
   if (raw.includes("vulkan")) return "vulkan";
   if (raw.includes("cpu")) return "cpu";
   if (raw.includes("auto")) return "auto";
-  if (["auto", "cuda", "cpu", "vulkan"].includes(raw)) return raw;
+  if (["auto", "cuda", "cuda_full", "cpu", "vulkan"].includes(raw)) return raw;
   return "auto";
 }
 
@@ -473,73 +663,6 @@ function applyRuntimeBackendUi() {
     opt.disabled = false;
   });
   applyGpuAvailability();
-}
-
-async function loadRuntimeBackends({ silent = true } = {}) {
-  const select = $("launchRuntimeBackend");
-  const detail = $("launchRuntimeDetail");
-  const currentValue = String(select.value || "gguf:auto");
-  const currentBackend = normalizeRuntimeBackend(currentValue);
-
-  try {
-    const payload = await api("/v1/system/runtime-backends");
-    const options = Array.isArray(payload?.gguf_runtimes) && payload.gguf_runtimes.length > 0
-      ? payload.gguf_runtimes
-      : (Array.isArray(payload?.data) ? payload.data : []);
-    runtimeBackendsCache = options;
-
-    select.innerHTML = "";
-    options.forEach((item) => {
-      const value = String(item.id || "gguf:auto");
-      const backend = normalizeRuntimeBackend(value);
-      const option = document.createElement("option");
-      option.value = value;
-      const versionText = item.version ? ` v${item.version}` : "";
-      option.textContent = `${item.label || backend}${versionText}`;
-      option.disabled = item.available === false;
-      option.dataset.selectionId = item.id || value;
-      const preciseLabel = String(item.id || "").startsWith("llama.cpp-")
-        ? String(item.id)
-        : (item.label || backend);
-      option.dataset.runtimeLabel = preciseLabel;
-      option.dataset.detail = item.detail || "";
-      select.appendChild(option);
-    });
-
-    if (select.options.length === 0) {
-      ["auto", "cuda", "vulkan", "cpu"].forEach((backend) => {
-        const option = document.createElement("option");
-        option.value = backend;
-        option.textContent = backend.toUpperCase();
-        select.appendChild(option);
-      });
-    }
-
-    const exact = Array.from(select.options).find((opt) => opt.value === currentValue && !opt.disabled);
-    if (exact) {
-      select.value = exact.value;
-    } else {
-      const sameBackend = Array.from(select.options).find(
-        (opt) => !opt.disabled && normalizeRuntimeBackend(opt.value) === currentBackend
-      );
-      select.value = sameBackend?.value || select.options[0]?.value || "gguf:auto";
-    }
-    if (detail) {
-      const selectedOption = select.options[select.selectedIndex];
-      detail.textContent = selectedOption?.dataset?.detail || "";
-    }
-    applyRuntimeBackendUi();
-    if (!silent) {
-      toast("Runtime backends updated");
-    }
-  } catch (error) {
-    if (detail) {
-      detail.textContent = "Runtime detection unavailable";
-    }
-    if (!silent) {
-      toast(`Runtime backend load failed: ${error.message}`);
-    }
-  }
 }
 
 function formatGpuStats(inst) {
@@ -649,6 +772,10 @@ $("saveGlobalApi").onclick = async () => {
     });
     await refreshGlobalApiAccess();
     toast(`API access updated: ${requireApiKey ? "Require Key" : "Open"}`);
+    // Reload dropdowns — they may have been empty because the token wasn't set
+    // at page load time.
+    void loadSystemGpus("launchGpus");
+    void loadModelList("launchInstanceModel");
   } catch (error) {
     toast(`API access update failed: ${error.message}`);
   }
@@ -662,7 +789,7 @@ $("globalApiToken").addEventListener("keydown", (event) => {
 });
 
 $("closeAll").onclick = async () => {
-  const confirmed = window.confirm("Unload all instances and stop LM Studio server now?");
+  const confirmed = window.confirm("Stop all running instances now?");
   if (!confirmed) {
     return;
   }
@@ -692,7 +819,7 @@ $("closeAll").onclick = async () => {
   }
 };
 
-async function loadLMStudioModels(selectElementId) {
+async function loadModelList(selectElementId) {
   const select = $(selectElementId);
   const currentValue = select.value;
 
@@ -713,41 +840,43 @@ async function loadLMStudioModels(selectElementId) {
   }
 
   try {
-    const { models = [] } = await api("/v1/lmstudio/models");
-    if (models.length > 0) {
-      applyModels(models, "LM Studio");
+    const { data = [], warning } = await api("/v1/local-models");
+    if (data.length > 0) {
+      applyModels(data, "local files");
+      if (warning) toast(`Models: ${warning}`);
       return;
     }
-  } catch {
-    // Fall through to instances-based model discovery.
-  }
 
-  try {
-    const { data = [] } = await api("/v1/instances");
+    // Fallback: models from running instances
+    const { data: instances = [] } = await api("/v1/instances");
     const unique = new Set();
-    for (const item of data) {
+    for (const item of instances) {
       const model = String(item?.effectiveModel || "").trim();
-      if (model) {
-        unique.add(model);
-      }
+      if (model) unique.add(model);
     }
-
     const fallbackModels = [...unique].map((id) => ({ id, name: id }));
     if (fallbackModels.length > 0) {
       applyModels(fallbackModels, "running instances");
       return;
     }
 
-    select.innerHTML = '<option value="">-- No models discovered --</option>';
-    toast("No models discovered. Start LM Studio server or run an instance first.");
+    select.innerHTML = '<option value="">-- No models found --</option>';
+    if (warning) {
+      toast(`No models found: ${warning}`);
+    } else {
+      toast("No .gguf files found. Check MODELS_DIR in lmlaunch.env.");
+    }
   } catch (error) {
-    toast(`Models load failed: ${error.message}`);
+    const hint = error.message.includes("401") || error.message.toLowerCase().includes("unauthorized")
+      ? " — enter your API token above and save"
+      : "";
+    toast(`Models load failed: ${error.message}${hint}`);
   }
 }
 
 async function loadSystemGpus(selectElementId = "launchGpus") {
   try {
-    const { data = [], warning, diagnostics } = await api("/v1/system/gpus");
+    const { data = [], warning, diagnostics } = await api("/v1/gpus");
     gpuTelemetryCache = data;
     const gpusSelect = $(selectElementId);
     const currentSelected = Array.from(gpusSelect.selectedOptions).map((opt) => opt.value);
@@ -775,27 +904,55 @@ async function loadSystemGpus(selectElementId = "launchGpus") {
 
     toast(`Loaded ${data.length} GPUs`);
   } catch (error) {
-    toast(`GPU load failed: ${error.message}`);
+    const hint = error.message.includes("401") || error.message.toLowerCase().includes("unauthorized")
+      ? " — enter your API token above and save"
+      : "";
+    toast(`GPU load failed: ${error.message}${hint}`);
   }
 }
 
 // Auto-load on page load
 window.addEventListener("load", () => {
   setTimeout(() => loadSystemGpus("launchGpus"), 300);
-  setTimeout(() => loadLMStudioModels("launchInstanceModel"), 450);
-  setTimeout(() => loadRuntimeBackends({ silent: false }), 520);
+  setTimeout(() => loadModelList("launchInstanceModel"), 450);
+  $('launchInstanceModel').addEventListener('change', () => autoDetectMmproj());
 });
+
+async function autoDetectMmproj() {
+  const modelPath = ($("launchInstanceModel")?.value || "").trim();
+  const mmprojInput = $("launchMmproj");
+  if (!mmprojInput || !modelPath) return;
+  // Only auto-fill if field is empty or was previously auto-filled
+  if (mmprojInput.value && !mmprojInput.dataset.autoFilled) return;
+
+  try {
+    const data = await api("/v1/local-models");
+    const models = Array.isArray(data?.data) ? data.data : [];
+    const dir = modelPath.replace(/[/\\][^/\\]+$/, "");
+    const mmproj = models.find((m) => {
+      const p = String(m.id || m);
+      return p.startsWith(dir) && p.toLowerCase().includes("mmproj");
+    });
+    if (mmproj) {
+      mmprojInput.value = String(mmproj.id || mmproj);
+      mmprojInput.dataset.autoFilled = "1";
+    } else {
+      if (mmprojInput.dataset.autoFilled) {
+        mmprojInput.value = "";
+        mmprojInput.dataset.autoFilled = "1";
+      }
+    }
+  } catch (_) {
+    // silent — mmproj detection is best-effort
+  }
+}
 
 $("launchInstance").onclick = async () => {
   try {
     const name = $("launchName").value.trim();
     const port = Number($("launchPort").value);
     const model = $("launchInstanceModel").value.trim();
-    const runtimeSelect = $("launchRuntimeBackend");
-    const runtimeBackend = normalizeRuntimeBackend(runtimeSelect.value);
-    const runtimeOption = runtimeSelect.options[runtimeSelect.selectedIndex];
-    const runtimeSelection = runtimeOption?.dataset?.selectionId || runtimeBackend;
-    const runtimeLabel = runtimeOption?.dataset?.runtimeLabel || runtimeBackend;
+    const runtimeBackend = normalizeRuntimeBackend($('launchRuntimeBackend').value);
     let selectedGpus = Array.from($("launchGpus").selectedOptions).map((opt) => opt.value);
 
     if (!name) {
@@ -832,6 +989,13 @@ $("launchInstance").onclick = async () => {
 
     const contextLength = parseContextLengthInput();
 
+    const baseRuntimeArgs = String($('launchServerArgs').value || '').trim().split(/\s+/).filter(Boolean);
+    const mmprojPath = ($('launchMmproj')?.value || '').trim();
+    const alreadyHasMmproj = baseRuntimeArgs.some((a) => a === '--mmproj');
+    if (mmprojPath && !alreadyHasMmproj) {
+      baseRuntimeArgs.push('--mmproj', mmprojPath);
+    }
+
     const payload = {
       name,
       port,
@@ -848,9 +1012,8 @@ $("launchInstance").onclick = async () => {
         backoffMs: Number($("launchRestartBackoffMs").value || 3000)
       },
       runtimeBackend,
-      runtimeSelection,
-      runtimeLabel,
-      contextLength
+      contextLength,
+      runtimeArgs: baseRuntimeArgs
     };
 
     const launchPoll = setInterval(() => {
@@ -902,7 +1065,7 @@ async function refreshInstances() {
     for (const inst of data || []) {
       const opt = document.createElement("option");
       opt.value = inst.id;
-      opt.textContent = `${inst.id} (${inst.state})`;
+      opt.textContent = `${inst.profileName || inst.id} (${inst.state})`;
       logsSelect.appendChild(opt);
 
       const tr = document.createElement("tr");
@@ -911,34 +1074,33 @@ async function refreshInstances() {
       const baseUrl = String(inst.baseUrl || `http://${inst.host || "127.0.0.1"}:${inst.port}`);
       const proxyBaseUrl = String(inst.proxyBaseUrl || `${settings.apiBase}/v1/instances/${encodeURIComponent(inst.id)}/proxy/v1`);
       const runtimeBackend = normalizeRuntimeBackend(inst.runtime?.hardware || "auto");
-      const runtimeLabel = inst.runtime?.selection || inst.runtime?.label || runtimeBackend;
+      const runtimeLabel = runtimeBackend;
       const isStopped = String(inst.state || "").toLowerCase() === "stopped";
       const primaryAction = isStopped
-        ? `<button class="delete" data-action="delete" data-id="${inst.id}">Remove</button>`
-        : `<button data-action="stop" data-id="${inst.id}">Stop</button>`;
+        ? `<button class="delete" data-action="delete" data-id="${inst.id}">Delete Instance</button>`
+        : `<button class="delete" data-action="delete" data-id="${inst.id}">Remove</button>`;
       const drainAction = isStopped
         ? ""
         : `<button data-action="drain" data-id="${inst.id}" data-enabled="${inst.drain ? "false" : "true"}">${inst.drain ? "\u25b6 Resume Intake" : "\u23f8 Pause Intake"}</button>`;
-      const forceStopAction = isStopped
-        ? ""
-        : `<button class="kill" data-action="kill" data-id="${inst.id}">Force Stop</button>`;
-      const removeSecondaryAction = isStopped
-        ? ""
-        : `<button class="delete" data-action="delete" data-id="${inst.id}">Remove</button>`;
+      const removeSecondaryAction = "";
       const testAction = isStopped
         ? ""
         : `<button class="copy" data-action="test" data-id="${inst.id}">Test Prompt</button>`;
 
       tr.innerHTML = `
-        <td>${inst.id}</td>
+        <td>
+          <div>${escapeHtml(inst.profileName || inst.id)}</div>
+          <div class="runtime-meta">${escapeHtml(inst.id)}</div>
+        </td>
         <td>
           ${stateChipHtml(inst.state)}
           ${activityChipHtml(inst)}
         </td>
         <td>
-          <div>${escapeHtml(inst.effectiveModel || "-")}</div>
+          <div title="${escapeHtml(inst.effectiveModel || "-")}">${escapeHtml(trimModelPath(inst.effectiveModel || "-"))}</div>
           <div class="runtime-meta">ctx: ${inst.contextLength || "auto"}</div>
           <div class="runtime-meta">runtime: ${escapeHtml(runtimeLabel)}</div>
+          <div class="runtime-meta" title="${escapeHtml(Array.isArray(inst.runtime?.serverArgs) && inst.runtime.serverArgs.length > 0 ? inst.runtime.serverArgs.join(" ") : "(none)")}">args: ${escapeHtml(trimArgsModelPaths(Array.isArray(inst.runtime?.serverArgs) && inst.runtime.serverArgs.length > 0 ? inst.runtime.serverArgs.join(" ") : "(none)"))}</div>
         </td>
         <td>${inst.port}</td>
         <td class="gpu-cell">${formatGpuStats(inst)}</td>
@@ -951,11 +1113,7 @@ async function refreshInstances() {
             <div class="action-secondary">
               ${testAction}
               ${drainAction}
-              ${forceStopAction}
-              <div class="action-copy-grid">
-                <button class="copy" data-action="copy-base" data-id="${inst.id}" data-copy="${proxyBaseUrl}">Proxy Base URL</button>
-                <button class="copy" data-action="copy-chat" data-id="${inst.id}" data-copy="${proxyBaseUrl}/chat/completions">Proxy Chat URL</button>
-              </div>
+              <button class="copy" data-action="copy-base" data-id="${inst.id}" data-copy="${proxyBaseUrl}">Copy API URL</button>
               <button class="copy" data-action="copy-model" data-id="${inst.id}" data-copy="${inst.effectiveModel}">Copy Model ID</button>
               ${removeSecondaryAction}
             </div>
@@ -986,18 +1144,7 @@ async function refreshInstances() {
         const id = btn.getAttribute("data-id");
         const action = btn.getAttribute("data-action");
         try {
-          if (action === "stop") {
-            const confirmed = window.confirm(`Stop instance ${id}?`);
-            if (!confirmed) return;
-            await api(`/v1/instances/${id}/stop`, { method: "POST", body: "{}" });
-          } else if (action === "kill") {
-            const confirmed = window.confirm(`Force stop instance ${id}?`);
-            if (!confirmed) return;
-            await api(`/v1/instances/${id}/kill`, {
-              method: "POST",
-              body: JSON.stringify({ reason: "operator" })
-            });
-          } else if (action === "drain") {
+          if (action === "drain") {
             const enable = btn.getAttribute("data-enabled") === "true";
             await api(`/v1/instances/${id}/drain`, {
               method: "POST",
@@ -1009,7 +1156,7 @@ async function refreshInstances() {
             await api(`/v1/instances/${id}`, {
               method: "DELETE"
             });
-          } else if (action === "copy-base" || action === "copy-chat" || action === "copy-model") {
+          } else if (action === "copy-base" || action === "copy-model") {
             copy(btn.getAttribute("data-copy") || "");
             return;
           } else if (action === "test") {
@@ -1152,24 +1299,6 @@ $("deleteSelectedConfig").onclick = async () => {
   }
 };
 
-$("exportCurrentConfig").onclick = async () => {
-  try {
-    const response = await fetch(`${settings.apiBase}/v1/instance-configs/current/export.yaml`, {
-      headers: {
-        authorization: `Bearer ${settings.token}`
-      }
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(text || `HTTP ${response.status}`);
-    }
-    downloadTextFile("instance-config-current.yaml", text);
-    toast("Exported current config YAML");
-  } catch (error) {
-    toast(`Export current failed: ${error.message}`);
-  }
-};
-
 $("exportSelectedConfig").onclick = async () => {
   try {
     const id = $("savedConfigSelect").value;
@@ -1177,22 +1306,46 @@ $("exportSelectedConfig").onclick = async () => {
       toast("Select a saved config first");
       return;
     }
-
     const response = await fetch(`${settings.apiBase}/v1/instance-configs/${id}/export.yaml`, {
-      headers: {
-        authorization: `Bearer ${settings.token}`
-      }
+      headers: { authorization: `Bearer ${settings.token}` }
     });
     const text = await response.text();
-    if (!response.ok) {
-      throw new Error(text || `HTTP ${response.status}`);
-    }
+    if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
     downloadTextFile(`instance-config-${id}.yaml`, text);
-    toast("Exported selected config YAML");
+    toast("Config YAML downloaded");
   } catch (error) {
-    toast(`Export selected failed: ${error.message}`);
+    toast(`Download failed: ${error.message}`);
   }
 };
+
+$("importConfigYaml").onclick = () => {
+  $("importConfigYamlFile").click();
+};
+
+$("importConfigYamlFile").onchange = async () => {
+  const file = $("importConfigYamlFile").files?.[0];
+  if (!file) return;
+  $("importConfigYamlFile").value = "";
+  try {
+    const text = await file.text();
+    const response = await fetch(`${settings.apiBase}/v1/instance-configs/import.yaml`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/yaml",
+        ...(settings.token ? { authorization: `Bearer ${settings.token}` } : {})
+      },
+      body: text
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+    toast(`Imported config: ${data.name}`);
+    await refreshConfigLibrary();
+  } catch (error) {
+    toast(`Import failed: ${error.message}`);
+  }
+};
+
+
 
 $("launchContextPreset").onchange = () => {
   const customInput = $("launchContextCustom");
@@ -1254,6 +1407,12 @@ if ($("instanceTestSend")) {
   };
 }
 
+if ($("instanceTestSpeedTest")) {
+  $("instanceTestSpeedTest").onclick = () => {
+    void runInstanceSpeedTest();
+  };
+}
+
 if ($("instanceTestReset")) {
   $("instanceTestReset").onclick = () => {
     $("instanceTestPrompt").value = "Reply exactly with: OK";
@@ -1283,8 +1442,6 @@ syncGlobalApiTokenInput();
 void refreshGlobalApiAccess();
 refreshInstances();
 refreshConfigLibrary();
-loadRuntimeBackends({ silent: true });
 applyRestartPolicyUi();
 setInterval(refreshInstances, 2000);
 setInterval(() => loadSystemGpus("launchGpus"), 15000);
-setInterval(() => loadRuntimeBackends({ silent: true }), 60000);
