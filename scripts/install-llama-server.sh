@@ -2,7 +2,7 @@
 # install-llama-server.sh — detect GPU backend and install a matching llama-server binary.
 #
 # Supports: NVIDIA (CUDA 11/12), AMD (ROCm 5+), Vulkan fallback, CPU (AVX2/AVX).
-# Called automatically by install-ubuntu-systemd.sh and by the standalone install.sh.
+# Called automatically by install-systemd.sh and by the standalone install.sh.
 #
 # Environment overrides:
 #   LLAMA_SERVER_INSTALL_DIR   — installation target (default: /usr/local/bin)

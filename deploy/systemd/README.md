@@ -12,7 +12,7 @@ One systemd unit runs everything. The bridge spawns one `llama-server` child pro
 
 ```bash
 # From the repo root on your Ubuntu host:
-sudo bash scripts/install-ubuntu-systemd.sh
+sudo bash scripts/install-systemd.sh
 ```
 
 The installer:

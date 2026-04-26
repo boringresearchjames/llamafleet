@@ -140,7 +140,7 @@ LlamaFleet is two core Node.js services plus an optional bridge router:
 ### Systemd deployment (Linux)
 
 ```bash
-sudo bash scripts/install-ubuntu-systemd.sh
+sudo bash scripts/install-systemd.sh
 ```
 
 - Service unit: `deploy/systemd/llamafleet.service`

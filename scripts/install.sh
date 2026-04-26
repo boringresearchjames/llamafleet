@@ -6,7 +6,7 @@
 #
 # What this does:
 #   1. Downloads the latest LlamaFleet release tarball to /opt/llamafleet
-#   2. Runs install-ubuntu-systemd.sh (creates service user, systemd unit, env file)
+#   2. Runs install-systemd.sh (creates service user, systemd unit, env file)
 #   3. Runs install-llama-server.sh (detects GPU, downloads matching llama-server binary)
 #
 # Supports: Debian/Ubuntu (apt-get), Fedora/RHEL/CentOS (dnf/yum), Arch (pacman), openSUSE (zypper).
@@ -138,7 +138,7 @@ cp -a "$TMPDIR_WORK/llamafleet-v${VERSION}/." "$INSTALL_DIR/"
 # ── run system installer ──────────────────────────────────────────────────────
 
 export LLAMAFLEET_INSTALL_ROOT="$INSTALL_DIR"
-bash "$INSTALL_DIR/scripts/install-ubuntu-systemd.sh"
+bash "$INSTALL_DIR/scripts/install-systemd.sh"
 
 # ── done ─────────────────────────────────────────────────────────────────────
 
