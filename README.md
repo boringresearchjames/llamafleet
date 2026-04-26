@@ -183,8 +183,6 @@ Open **http://localhost:8081** — dashboard and API are both served from this p
 | Linux (NVIDIA, CUDA 12) | `llama-*-bin-ubuntu-x64-cuda-cu12*.zip` |
 | Linux (AMD, ROCm) | `llama-*-bin-ubuntu-x64-rocm*.zip` |
 | Linux (CPU) | `llama-*-bin-ubuntu-x64-avx2*.zip` |
-| macOS (Apple Silicon) | `llama-*-bin-macos-arm64.zip` |
-| macOS (Intel) | `llama-*-bin-macos-x64.zip` |
 | Windows (NVIDIA, CUDA 12) | `llama-*-bin-win-cuda-cu12-x64.zip` |
 | Windows (CPU / AVX2) | `llama-*-bin-win-avx2-x64.zip` |
 
@@ -214,19 +212,12 @@ LlamaFleet reads configuration from environment variables. Set them in your shel
 | `API_AUTH_TOKEN` | Bearer token for the dashboard and API (omit to disable auth) |
 | `BRIDGE_AUTH_TOKEN` | Internal API↔bridge token (omit to disable) |
 
-**Linux / macOS** — export in your shell, or add to `~/.bashrc` / `~/.zshrc`:
+**Linux** — export in your shell, or add to `~/.bashrc` / `~/.profile`:
 
 ```bash
 export LLAMA_SERVER_BIN=/usr/local/bin/llama-server
 export API_AUTH_TOKEN=change-me
 export BRIDGE_AUTH_TOKEN=change-me
-```
-
-**macOS** — alternatively, install via Homebrew (puts `llama-server` on your PATH automatically):
-
-```bash
-brew install llama.cpp
-# No LLAMA_SERVER_BIN needed — it's on PATH
 ```
 
 **Windows (PowerShell)** — set for the current session:
@@ -250,9 +241,11 @@ Or open **System Properties → Environment Variables** and add them there.
 **MODELS_DIR** — LlamaFleet auto-scans `~/.lmstudio/models`, `~/.ollama/models`, `~/.cache/huggingface/hub`, and `~/unsloth_studio`. To use a different directory:
 
 ```bash
-# Linux / macOS
+# Linux
 export MODELS_DIR=/mnt/nas/models
+```
 
+```powershell
 # Windows
 $env:MODELS_DIR = "D:\models"
 ```
