@@ -677,19 +677,87 @@ function formatGpuStats(inst) {
   return stats.map((gpu) => {
     const used = Number(gpu.memory_used_mib ?? 0);
     const total = Number(gpu.memory_total_mib ?? 0);
-    const memPct = total > 0 ? Math.round((used / total) * 100) : null;
-    const temp = gpu.temperature_c ?? "n/a";
-    const gClock = gpu.graphics_clock_mhz ?? "n/a";
-    const mClock = gpu.memory_clock_mhz ?? "n/a";
+    const memPct = total > 0 ? Math.round((used / total) * 100) : 0;
+    const barFill = Math.min(100, memPct);
+    const barColor = memPct >= 90 ? "#ff5c7a" : memPct >= 70 ? "#ffbe5c" : "#4cdb8e";
     const util = gpu.utilization_percent ?? "n/a";
-    const power = gpu.power_draw_w != null ? `${Number(gpu.power_draw_w).toFixed(1)} W` : null;
-    const powerStr = power ? ` • pwr ${power}` : "";
-    return `GPU ${escapeHtml(gpu.id)}<br><span class="gpu-line">${escapeHtml(gpu.name || "Unknown")}</span><br><span class="gpu-line">mem ${used}/${total} MiB${memPct !== null ? ` (${memPct}%)` : ""} • util ${util}%${powerStr}</span><br><span class="gpu-line">temp ${temp}C • gfx ${gClock} MHz • mem ${mClock} MHz</span>`;
-  }).join("<hr class=\"gpu-divider\" />");
+    const temp = gpu.temperature_c != null ? `${gpu.temperature_c}°` : null;
+    const pwr = gpu.power_draw_w != null ? `${Number(gpu.power_draw_w).toFixed(0)}W` : null;
+    const meta = [util !== "n/a" ? `${util}%` : null, temp, pwr].filter(Boolean).join(" ");
+    return `<div class="gpu-compact" title="${escapeHtml(gpu.name || "GPU " + gpu.id)}: ${used}/${total} MiB VRAM (${memPct}%)">
+      <span class="gpu-compact-id">GPU&nbsp;${escapeHtml(String(gpu.id))}</span>
+      <div class="vram-bar-wrap"><div class="vram-bar-fill" style="width:${barFill}%;background:${barColor}"></div></div>
+      <span class="vram-pct">${memPct}%</span>
+      ${meta ? `<span class="gpu-compact-meta">${escapeHtml(meta)}</span>` : ""}
+    </div>`;
+  }).join("");
 }
 
-function downloadTextFile(filename, content) {
-  const blob = new Blob([content], { type: "application/yaml" });
+function cloneInstanceSetup(instanceId) {
+  const inst = instancesCache.find((x) => String(x.id) === String(instanceId));
+  if (!inst) { toast("Instance not found"); return; }
+
+  // Model — add as option if not already present, then select it
+  const modelSelect = $("launchInstanceModel");
+  if (inst.effectiveModel && !Array.from(modelSelect.options).some((o) => o.value === inst.effectiveModel)) {
+    const opt = document.createElement("option");
+    opt.value = inst.effectiveModel;
+    opt.textContent = trimModelPath(inst.effectiveModel);
+    modelSelect.appendChild(opt);
+  }
+  if (inst.effectiveModel) modelSelect.value = inst.effectiveModel;
+
+  // Name — blank so the user chooses a distinct one
+  $("launchName").value = "";
+
+  // Port — next free port above the source instance's port
+  $("launchPort").value = String(suggestNextFreePort(Number(inst.port) + 1));
+
+  // Runtime backend
+  const backend = normalizeRuntimeBackend(inst.runtime?.hardware || "auto");
+  $("launchRuntimeBackend").value = backend;
+  applyRuntimeBackendUi();
+
+  // Server args — strip --port {port} placeholder injected at launch time
+  const rawArgs = Array.isArray(inst.runtime?.serverArgs) ? inst.runtime.serverArgs : [];
+  const filteredArgs = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    if (rawArgs[i] === "--port") { i++; continue; }
+    filteredArgs.push(rawArgs[i]);
+  }
+  $("launchServerArgs").value = filteredArgs.join(" ");
+
+  // Context length
+  const ctx = inst.contextLength;
+  const presetOptions = ["4096", "8192", "16384", "32768", "65536"];
+  if (ctx == null) {
+    $("launchContextPreset").value = "auto";
+  } else if (presetOptions.includes(String(ctx))) {
+    $("launchContextPreset").value = String(ctx);
+  } else {
+    $("launchContextPreset").value = "custom";
+    $("launchContextCustom").value = String(ctx);
+    $("launchContextCustom").disabled = false;
+  }
+
+  // Capacity
+  $("launchInflight").value = String(inst.maxInflightRequests || 4);
+  $("launchQueueLimit").value = String(inst.queueLimit || 64);
+  $("launchModelParallel").value = String(inst.modelParallel || 1);
+
+  // Restart policy
+  const rp = inst.restartPolicy || { mode: "never" };
+  $("launchRestartMode").value = rp.mode || "never";
+  $("launchRestartRetries").value = String(rp.maxRetries || 2);
+  $("launchRestartBackoffMs").value = String(rp.backoffMs || 3000);
+  applyRestartPolicyUi();
+
+  $("launchInstance").scrollIntoView({ behavior: "smooth", block: "center" });
+  $("launchName").focus();
+  toast(`Cloned setup from "${inst.profileName || instanceId}" — enter a name and click Start`);
+}
+
+function downloadTextFile(filename, content) {  const blob = new Blob([content], { type: "application/yaml" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -1066,8 +1134,7 @@ async function refreshInstances() {
 
     logsSelect.innerHTML = '<option value="">-- Select instance --</option>';
 
-    for (const inst of data || []) {
-      const opt = document.createElement("option");
+    for (const inst of data || []) {      const opt = document.createElement("option");
       opt.value = inst.id;
       opt.textContent = `${inst.profileName || inst.id} (${inst.state})`;
       logsSelect.appendChild(opt);
@@ -1119,6 +1186,7 @@ async function refreshInstances() {
               ${drainAction}
               <button class="copy" data-action="copy-base" data-id="${inst.id}" data-copy="${proxyBaseUrl}">Copy API URL</button>
               <button class="copy" data-action="copy-model" data-id="${inst.id}" data-copy="${inst.effectiveModel}">Copy Model ID</button>
+              <button class="copy" data-action="clone" data-id="${inst.id}">Clone Setup</button>
               ${removeSecondaryAction}
             </div>
           </details>
@@ -1134,6 +1202,16 @@ async function refreshInstances() {
 
     if (!logsSelect.value && logsSelect.options.length > 1) {
       logsSelect.selectedIndex = 1;
+    }
+
+    if ((data || []).length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" style="padding:0;border:none">
+        <div class="empty-state">
+          <div class="empty-state-icon">🦙</div>
+          <div class="empty-state-title">No instances running</div>
+          <div class="empty-state-desc">Select a model in the <strong>Launch New Instance</strong> form above, choose your GPUs and port, then click <strong>Start</strong>.</div>
+        </div>
+      </td></tr>`;
     }
 
     const launchPort = $("launchPort");
@@ -1166,6 +1244,9 @@ async function refreshInstances() {
           } else if (action === "test") {
             openInstanceTestDialog(id);
             return;
+          } else if (action === "clone") {
+            cloneInstanceSetup(id);
+            return;
           }
 
           toast(`Action ${action} applied on ${id}`);
@@ -1182,20 +1263,60 @@ async function refreshInstances() {
 
 $("refreshInstances").onclick = refreshInstances;
 
+let autoTailTimer = null;
+
+function stopAutoTail() {
+  if (autoTailTimer !== null) {
+    clearInterval(autoTailTimer);
+    autoTailTimer = null;
+  }
+}
+
+async function doFetchLogs() {
+  const instanceId = $("logsInstanceSelect").value.trim();
+  if (!instanceId) return;
+  const lines = Number($("logsLines").value || 200);
+  const data = await api(`/v1/instances/${instanceId}/logs?lines=${lines}`);
+  const view = $("logsView");
+  view.textContent = data.data || "";
+  view.scrollTop = view.scrollHeight;
+}
+
 $("refreshLogs").onclick = async () => {
+  stopAutoTail();
+  const autoTailChk = $("logsAutoTail");
+  if (autoTailChk) autoTailChk.checked = false;
   try {
     const instanceId = $("logsInstanceSelect").value.trim();
     if (!instanceId) {
       toast("Select an instance first");
       return;
     }
-    const lines = Number($("logsLines").value || 200);
-    const data = await api(`/v1/instances/${instanceId}/logs?lines=${lines}`);
-    $("logsView").textContent = data.data || "";
+    await doFetchLogs();
   } catch (error) {
     toast(`Logs refresh failed: ${error.message}`);
   }
 };
+
+$("logsAutoTail").addEventListener("change", () => {
+  stopAutoTail();
+  if ($("logsAutoTail").checked) {
+    void doFetchLogs().catch((e) => toast(`Auto-tail error: ${e.message}`));
+    autoTailTimer = setInterval(() => {
+      void doFetchLogs().catch((e) => {
+        toast(`Auto-tail error: ${e.message}`);
+        stopAutoTail();
+        $("logsAutoTail").checked = false;
+      });
+    }, 2000);
+  }
+});
+
+$("logsInstanceSelect").addEventListener("change", () => {
+  stopAutoTail();
+  const autoTailChk = $("logsAutoTail");
+  if (autoTailChk) autoTailChk.checked = false;
+});
 
 $("clearLogs").onclick = () => {
   $("logsView").textContent = "";

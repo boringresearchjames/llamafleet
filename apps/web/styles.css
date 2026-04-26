@@ -511,20 +511,53 @@ button:active {
 }
 
 .gpu-cell {
-  min-width: 270px;
+  min-width: 200px;
   font-family: "JetBrains Mono", Consolas, monospace;
   font-size: 11px;
   line-height: 1.35;
 }
 
-.gpu-line {
-  color: var(--muted);
+.gpu-compact {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+  flex-wrap: nowrap;
 }
 
-.gpu-divider {
-  border: 0;
-  border-top: 1px solid rgba(159, 176, 216, 0.2);
-  margin: 6px 0;
+.gpu-compact-id {
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.vram-bar-wrap {
+  flex: 1 1 60px;
+  min-width: 40px;
+  max-width: 90px;
+  height: 7px;
+  background: rgba(159, 176, 216, 0.15);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.vram-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.vram-pct {
+  font-weight: 700;
+  min-width: 32px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.gpu-compact-meta {
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .runtime-meta {
@@ -675,6 +708,52 @@ button:active {
   grid-template-columns: 1.2fr 180px auto;
   gap: 8px;
   align-items: end;
+}
+
+.logs-autotail-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.logs-autotail-label input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  text-align: center;
+  gap: 10px;
+}
+
+.empty-state-icon {
+  font-size: 48px;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.empty-state-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.empty-state-desc {
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 440px;
+  line-height: 1.6;
 }
 
 table {
