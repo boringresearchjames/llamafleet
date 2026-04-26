@@ -154,6 +154,11 @@ function normalizeGpuList(value) {
 
 function applyGpuVisibilityEnv(env, gpuList) {
   const value = Array.isArray(gpuList) ? gpuList.join(",") : "";
+  // Force PCI bus ID ordering so CUDA device indices match nvidia-smi physical
+  // indices. Without this, CUDA uses "fastest first" enumeration which can
+  // reverse the device order on NVLink/SXM2 systems (e.g. CUDA_VISIBLE_DEVICES=8,9
+  // maps CUDA0→GPU9 instead of CUDA0→GPU8, causing all VRAM to appear on one GPU).
+  env.CUDA_DEVICE_ORDER = "PCI_BUS_ID";
   env.CUDA_VISIBLE_DEVICES = value;
   env.NVIDIA_VISIBLE_DEVICES = value;
   env.GPU_DEVICE_ORDINAL = value;
