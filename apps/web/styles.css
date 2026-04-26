@@ -810,7 +810,7 @@ tbody tr:hover td {
 .actions-cell {
   min-width: 160px;
   width: 160px;
-  vertical-align: middle;
+  vertical-align: top;
 }
 
 .icon-toolbar {
