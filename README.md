@@ -91,15 +91,15 @@ Roughly prioritized:
 - [ ] **NUMA-aware instance pinning** — on multi-socket systems, allow per-instance CPU and memory affinity (for example `numactl`/cpuset style controls) so each instance can stay local to the CPU node nearest its assigned GPU(s).
 - [ ] **Runtime diagnostics and fallback matrix** — investigate why Vulkan runtime is unavailable on Linux hosts, why alternative CUDA llama.cpp runtime builds cannot currently be selected, and harden proxy/runtime failure handling when specific backends fail model startup or inference.
 - [ ] **Prometheus `/metrics` endpoint** — expose per-instance token throughput, queue depth, latency p50/p95, and GPU memory as a Prometheus scrape target. Useful for Grafana dashboards and alerting on unhealthy instances.
-- [ ] **Reverse proxy / load balancer manifest** — emit a ready-made nginx/Caddy/Traefik config or a simple built-in round-robin proxy across healthy instances of the same model, so clients can hit one endpoint and LM Launch routes the request.
+- [ ] **Reverse proxy / load balancer manifest** — emit a ready-made nginx/Caddy/Traefik config or a simple built-in round-robin proxy across healthy instances of the same model, so clients can hit one endpoint and LlamaFleet routes the request.
 - [ ] **Startup timeout and smoke check config** — currently readiness polling is fixed; expose timeout, retry interval, and expected response schema as per-instance options.
-- [ ] **TLS/SSL termination** — add native HTTPS support to the API service so LM Launch can terminate TLS directly without requiring a reverse proxy in front. Includes cert/key file config via env vars and optional mTLS for bridge-to-API authentication. Useful for deployments where adding nginx or Caddy is undesirable.
+- [ ] **TLS/SSL termination** — add native HTTPS support to the API service so LlamaFleet can terminate TLS directly without requiring a reverse proxy in front. Includes cert/key file config via env vars and optional mTLS for bridge-to-API authentication. Useful for deployments where adding nginx or Caddy is undesirable.
 - [ ] **Save as default template** — let users mark a launch configuration as the default so the form pre-fills on reload.
 - [ ] **llama.cpp build tooling** — the current bundled `llama-server` binary (`b760272`) shows a ~5% throughput gap vs. LM Studio's binary on V100 hardware. Investigate and document a reproducible build process for the latest llama.cpp (`cmake -DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES="70;86"`), benchmark against LM Studio, and consider packaging a prebuilt binary or build script in `scripts/` so fresh deployments don't rely on whatever version happens to be installed.
 
 ## Built-in Proxy
 
-Each `llama-server` instance launched by LM Launch binds to `127.0.0.1` on its assigned port — it is never directly exposed to the network. Instead, the API serves a built-in OpenAI-compatible reverse proxy for every instance:
+Each `llama-server` instance launched by LlamaFleet binds to `127.0.0.1` on its assigned port — it is never directly exposed to the network. Instead, the API serves a built-in OpenAI-compatible reverse proxy for every instance:
 
 ```
 http://<host>:8081/v1/instances/<id>/proxy/v1/chat/completions
@@ -120,7 +120,7 @@ The proxy base URL for each instance is shown in the dashboard under the instanc
 
 ## Architecture
 
-LM Launch is two core Node.js services (plus an optional bridge router for multi-host setups):
+LlamaFleet is two core Node.js services (plus an optional bridge router for multi-host setups):
 
 - **API + dashboard** (`apps/api`, port `8081`) — serves the browser dashboard and REST API. Owns all state persistence (`state.json`) and config profiles. Forwards instance lifecycle commands to the bridge. Authenticates inbound requests via `API_AUTH_TOKEN`.
 - **Host bridge** (`apps/host-bridge`, port `8090`) — runs natively on the host and spawns `llama-server` child processes directly, one per instance. Sets `CUDA_VISIBLE_DEVICES` and six other device-visibility env vars per instance to enforce GPU pinning. Reads GPU state via `nvidia-smi` and polls instance readiness. Authenticates requests from the API via `BRIDGE_AUTH_TOKEN`.
@@ -219,8 +219,6 @@ npm run start:api
 | `GPU_BLEED_MAX_DELTA_MIB` | `256` | Max allowed post-stop VRAM increase before flagging bleed |
 | `SMOKE_CHECK_ENABLED` | `false` | Run a test inference after startup to verify the instance responds |
 | `STRICT_SMOKE_CHECK` | `false` | Treat a failed smoke check as a fatal startup error |
-- `READINESS_HTTP_TIMEOUT_MS` (default `5000`)
-- `SMOKE_CHECK_ENABLED` (`true` by default)
 
 ## GPU Diagnostics
 
