@@ -24,7 +24,7 @@ LlamaFleet uses GGUF models via `llama-server` directly — no LM Studio require
 
 ## Dashboard
 
-![LlamaFleet dashboard](docs/llamafleet-dashboard-v2.png)
+![LlamaFleet dashboard](docs/llamafleet-dashboard-v3.png)
 
 ---
 
