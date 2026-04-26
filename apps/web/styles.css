@@ -758,16 +758,32 @@ button:active {
 
 table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0 4px;
   min-width: 620px;
 }
 
 th,
 td {
-  border: 1px solid rgba(159, 176, 216, 0.22);
+  border-top: 1px solid rgba(159, 176, 216, 0.22);
+  border-bottom: 1px solid rgba(159, 176, 216, 0.22);
+  border-left: none;
+  border-right: none;
   padding: 8px;
   font-size: 12px;
   vertical-align: top;
+}
+
+th:first-child,
+td:first-child {
+  border-left: 1px solid rgba(159, 176, 216, 0.22);
+  border-radius: 8px 0 0 8px;
+}
+
+th:last-child,
+td:last-child {
+  border-right: 1px solid rgba(159, 176, 216, 0.22);
+  border-radius: 0 8px 8px 0;
 }
 
 th {
@@ -790,6 +806,7 @@ tbody tr:hover td {
 .actions-cell {
   min-width: 160px;
   width: 160px;
+  vertical-align: middle;
 }
 
 .icon-toolbar {
