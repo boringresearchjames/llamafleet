@@ -1145,6 +1145,7 @@ async function refreshInstances() {
       const drainIcon = inst.drain ? "\u25b6" : "\u23f8";
       const drainBtn = isStopped ? "" : `<button class="icon-btn icon-drain" data-action="drain" data-id="${inst.id}" data-enabled="${inst.drain ? "false" : "true"}" title="${drainTitle}">${drainIcon}</button>`;
       const testBtn = isStopped ? "" : `<button class="icon-btn icon-test" data-action="test" data-id="${inst.id}" title="Test Prompt">&#x1F4AC;</button>`;
+      const speedTestBtn = isStopped ? "" : `<button class="icon-btn icon-speed" data-action="speed-test" data-id="${inst.id}" title="Speed Test (TPS)">&#x26A1;</button>`;
       const deleteTitle = isStopped ? "Delete Instance" : "Remove Instance";
       const deleteBtn = `<button class="icon-btn icon-delete" data-action="delete" data-id="${inst.id}" title="${deleteTitle}">&#x1F5D1;</button>`;
 
@@ -1169,6 +1170,7 @@ async function refreshInstances() {
           <div class="icon-toolbar">
             ${deleteBtn}
             ${testBtn}
+            ${speedTestBtn}
             ${drainBtn}
             <button class="icon-btn icon-copy" data-action="copy-model" data-id="${inst.id}" data-copy="${inst.effectiveModel}" title="Copy Model ID">&#x1F4CB;</button>
             <button class="icon-btn icon-clone" data-action="clone" data-id="${inst.id}" title="Clone Setup">&#x2398;</button>
@@ -1226,6 +1228,10 @@ async function refreshInstances() {
             return;
           } else if (action === "test") {
             openInstanceTestDialog(id);
+            return;
+          } else if (action === "speed-test") {
+            openInstanceTestDialog(id);
+            void runInstanceSpeedTest();
             return;
           } else if (action === "clone") {
             cloneInstanceSetup(id);

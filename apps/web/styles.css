@@ -848,6 +848,17 @@ tbody tr:hover td {
   border-color: rgba(120, 160, 255, 0.7);
 }
 
+.icon-speed {
+  background: rgba(255, 200, 40, 0.12);
+  border-color: rgba(255, 200, 40, 0.3);
+  color: #ffc828;
+}
+
+.icon-speed:hover {
+  background: rgba(255, 200, 40, 0.28);
+  border-color: rgba(255, 200, 40, 0.65);
+}
+
 .icon-test,
 .icon-copy,
 .icon-clone {
