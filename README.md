@@ -17,6 +17,7 @@ Every instance is accessible through a single **OpenAI-compatible API** at `http
 - Auto-restart with backoff on unclean exits
 - Config profiles — save a model + GPU + context + TTL combination and relaunch in one click
 - Token-authenticated API and bridge layers for deployment behind a reverse proxy
+- **Per-instance diagnostics** — live log viewer, inference speed test (tokens/sec), and prompt test directly from the dashboard
 
 LlamaFleet uses GGUF models via llama.cpp's `llama-server` directly (no LM Studio required), so it works on NVIDIA (including older pre-Ampere cards), AMD, Apple Silicon, and CPU — no CUDA toolkit required.
 
