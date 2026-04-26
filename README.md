@@ -28,7 +28,7 @@ LlamaFleet uses GGUF models via `llama-server` directly — no LM Studio require
 
 ---
 
-## Quick Start (Ubuntu — one line)
+## Quick Start (Linux — one line)
 
 ```bash
 curl -fsSL https://github.com/boringresearchjames/llamafleet/releases/latest/download/install.sh | sudo bash
@@ -59,9 +59,9 @@ Open **http://localhost:8081**.
 
 | Platform | Binary to download |
 |---|---|
-| Linux (NVIDIA, CUDA 12) | `llama-*-bin-ubuntu-x64-cuda-cu12*.zip` |
-| Linux (AMD, ROCm) | `llama-*-bin-ubuntu-x64-rocm*.zip` |
-| Linux (CPU) | `llama-*-bin-ubuntu-x64-avx2*.zip` |
+| Linux (NVIDIA, CUDA 12) | `llama-*-bin-linux-x64-cuda-cu12*.zip` |
+| Linux (AMD, ROCm) | `llama-*-bin-linux-x64-rocm*.zip` |
+| Linux (CPU) | `llama-*-bin-linux-x64-avx2*.zip` |
 | Windows (NVIDIA, CUDA 12) | `llama-*-bin-win-cuda-cu12-x64.zip` |
 | Windows (CPU / AVX2) | `llama-*-bin-win-avx2-x64.zip` |
 
@@ -137,7 +137,7 @@ LlamaFleet is two core Node.js services plus an optional bridge router:
 - **Host bridge** (`apps/host-bridge`, port `8090`) — runs natively on the host and spawns `llama-server` child processes, one per instance. Enforces `CUDA_VISIBLE_DEVICES` and six other device-visibility env vars for GPU pinning. Polls instance readiness and captures GPU telemetry via `nvidia-smi`.
 - **Bridge router** (`apps/bridge-router`, optional) — sits between the API and multiple host bridges for multi-host deployments. Configure via `BRIDGE_POOLS_JSON`.
 
-### Systemd deployment (Ubuntu)
+### Systemd deployment (Linux)
 
 ```bash
 sudo bash scripts/install-ubuntu-systemd.sh
