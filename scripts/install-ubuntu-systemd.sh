@@ -9,9 +9,9 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYSTEMD_SRC="$REPO_ROOT/deploy/systemd"
 SYSTEMD_DST="/etc/systemd/system"
-ENV_DST="/etc/lmlaunch"
-DATA_ROOT="/var/lib/lmlaunch"
-API_URL="${LMLAUNCH_DESKTOP_URL:-http://localhost:8081}"
+ENV_DST="/etc/llamafleet"
+DATA_ROOT="/var/lib/llamafleet"
+API_URL="${LLAMAFLEET_DESKTOP_URL:-http://localhost:8081}"
 
 # Verify Node.js and npm are available before proceeding.
 if ! command -v node >/dev/null 2>&1; then
@@ -39,11 +39,11 @@ ensure_user() {
 
 install -d -m 0755 "$ENV_DST"
 install -d -m 0755 "$DATA_ROOT"
-ensure_user lmlaunch "$DATA_ROOT/lmlaunch"
-install -d -m 0750 -o lmlaunch -g lmlaunch "$DATA_ROOT/api"
-install -d -m 0750 -o lmlaunch -g lmlaunch "$DATA_ROOT/bridge"
+ensure_user llamafleet "$DATA_ROOT/llamafleet"
+install -d -m 0750 -o llamafleet -g llamafleet "$DATA_ROOT/api"
+install -d -m 0750 -o llamafleet -g llamafleet "$DATA_ROOT/bridge"
 
-# Make the project directory readable/executable by the lmlaunch service user.
+# Make the project directory readable/executable by the llamafleet service user.
 chmod -R a+rX "$REPO_ROOT"
 
 # Restore ownership to the invoking user so future redeploys don't need sudo to
@@ -54,17 +54,17 @@ if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
 fi
 
 # Generate the service file with the actual project path substituted in place of
-# the /opt/lmlaunch placeholder so the service works regardless of install location.
-sed "s|/opt/lmlaunch|${REPO_ROOT}|g" \
-  "$SYSTEMD_SRC/lmlaunch.service" > "$SYSTEMD_DST/lmlaunch.service"
-chmod 0644 "$SYSTEMD_DST/lmlaunch.service"
+# the /opt/llamafleet placeholder so the service works regardless of install location.
+sed "s|/opt/llamafleet|${REPO_ROOT}|g" \
+  "$SYSTEMD_SRC/llamafleet.service" > "$SYSTEMD_DST/llamafleet.service"
+chmod 0644 "$SYSTEMD_DST/llamafleet.service"
 
-if [[ ! -f "$ENV_DST/lmlaunch.env" ]]; then
-  install -m 0640 "$SYSTEMD_SRC/env/lmlaunch.env.example" "$ENV_DST/lmlaunch.env"
+if [[ ! -f "$ENV_DST/llamafleet.env" ]]; then
+  install -m 0640 "$SYSTEMD_SRC/env/llamafleet.env.example" "$ENV_DST/llamafleet.env"
 fi
 
 # Auto-detect the models directory from the invoking user's LM Studio setup.
-# Resolves symlinks so the lmlaunch service user sees a real path it can be
+# Resolves symlinks so the llamafleet service user sees a real path it can be
 # granted access to via ACL (symlink targets on mounted drives need explicit
 # permissions on every path component).
 setup_models_dir() {
@@ -90,12 +90,12 @@ setup_models_dir() {
 
   echo "Detected models directory: $real_dir"
 
-  # Grant lmlaunch read+execute on the models dir and every parent directory
+  # Grant llamafleet read+execute on the models dir and every parent directory
   # so it can traverse into mounted drives with restricted permissions.
   if command -v setfacl >/dev/null 2>&1; then
     local dir="$real_dir"
     while [[ "$dir" != "/" ]]; do
-      setfacl -m u:lmlaunch:rx "$dir" 2>/dev/null || true
+      setfacl -m u:llamafleet:rx "$dir" 2>/dev/null || true
       dir="$(dirname "$dir")"
     done
     echo "ACL permissions granted for lmlaunch on models path."
@@ -106,15 +106,15 @@ setup_models_dir() {
 
   # Write MODELS_DIR into the env file only when a commented placeholder exists
   # (avoids overwriting an existing user-set value on reinstall).
-  if [[ -f "$ENV_DST/lmlaunch.env" ]]; then
-    if grep -q "^MODELS_DIR=" "$ENV_DST/lmlaunch.env"; then
+  if [[ -f "$ENV_DST/llamafleet.env" ]]; then
+    if grep -q "^MODELS_DIR=" "$ENV_DST/llamafleet.env"; then
       echo "MODELS_DIR already set; skipping auto-detection."
-    elif grep -q "^#MODELS_DIR=" "$ENV_DST/lmlaunch.env"; then
-      sed -i "s|^#MODELS_DIR=.*|MODELS_DIR=$real_dir|" "$ENV_DST/lmlaunch.env"
-      echo "Set MODELS_DIR=$real_dir in $ENV_DST/lmlaunch.env"
+    elif grep -q "^#MODELS_DIR=" "$ENV_DST/llamafleet.env"; then
+      sed -i "s|^#MODELS_DIR=.*|MODELS_DIR=$real_dir|" "$ENV_DST/llamafleet.env"
+      echo "Set MODELS_DIR=$real_dir in $ENV_DST/llamafleet.env"
     else
-      echo "MODELS_DIR=$real_dir" >> "$ENV_DST/lmlaunch.env"
-      echo "Set MODELS_DIR=$real_dir in $ENV_DST/lmlaunch.env"
+      echo "MODELS_DIR=$real_dir" >> "$ENV_DST/llamafleet.env"
+      echo "Set MODELS_DIR=$real_dir in $ENV_DST/llamafleet.env"
     fi
   fi
 }
@@ -122,10 +122,10 @@ setup_models_dir() {
 setup_models_dir
 
 systemctl daemon-reload
-systemctl enable --now lmlaunch
+systemctl enable --now llamafleet
 
 install_desktop_launcher() {
-  local launcher_name="lmlaunch.desktop"
+  local launcher_name="llamafleet.desktop"
   local app_launcher="/usr/share/applications/${launcher_name}"
   local desktop_target=""
 
@@ -133,8 +133,8 @@ install_desktop_launcher() {
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=LM Launch
-Comment=Open LM Launch dashboard
+Name=LlamaFleet
+Comment=Open LlamaFleet dashboard
 Exec=xdg-open ${API_URL}
 Terminal=false
 Categories=Development;Utility;
@@ -161,10 +161,10 @@ EOF
 
 install_desktop_launcher
 
-printf '\nInstalled lmlaunch systemd service.\n'
-printf 'Edit env file before starting: %s/lmlaunch.env\n' "$ENV_DST"
+printf '\nInstalled llamafleet systemd service.\n'
+printf 'Edit env file before starting: %s/llamafleet.env\n' "$ENV_DST"
 printf '  - Set API_AUTH_TOKEN and BRIDGE_AUTH_TOKEN\n'
 printf '  - Set LLAMA_SERVER_BIN to your llama-server binary path\n'
-printf '  - Set LM_LAUNCH_PUBLIC_HOST to this machine'"'"'s IP if accessing remotely\n'
+  printf '  - Set LLAMAFLEET_PUBLIC_HOST to this machine'\''s IP if accessing remotely\n'
 printf '  - MODELS_DIR auto-detected from ~/.lmstudio/models (override if needed)\n'
 printf 'Then reload: sudo systemctl restart lmlaunch\n'

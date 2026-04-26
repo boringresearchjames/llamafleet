@@ -1,4 +1,4 @@
-# LM Launch API
+# LlamaFleet API
 
 Control plane for instance lifecycle, config profiles, routing manifest, and agent integration. Also serves the browser dashboard.
 
@@ -22,7 +22,7 @@ Default port: **8081**
 | `STATE_FILE` | `./data/state.json` | Persistent state path |
 | `SHARED_CONFIG_FILE` | `./data/shared-config.yaml` | Shared config (profiles, security settings) |
 | `MODELS_DIR` | `~/.lmstudio/models` | Directory scanned for `.gguf` model files |
-| `LM_LAUNCH_PUBLIC_HOST` | *(unset)* | This machine's IP, used to construct proxy URLs shown in the dashboard |
+| `LLAMAFLEET_PUBLIC_HOST` | *(unset)* | This machine's IP, used to construct proxy URLs shown in the dashboard |
 | `CORS_ORIGIN` | `*` | `Access-Control-Allow-Origin` header value |
 
 ## Endpoints

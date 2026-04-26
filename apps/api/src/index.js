@@ -35,7 +35,7 @@ const stateFile = process.env.STATE_FILE || path.resolve(process.cwd(), "data", 
 const sharedConfigFile = process.env.SHARED_CONFIG_FILE || path.resolve(process.cwd(), "data", "shared-config.yaml");
 const apiAuthEnabled = Boolean(apiToken && apiToken !== "change-me");
 const bridgeAuthEnabled = Boolean(bridgeToken && bridgeToken !== "change-me");
-const publicHostOverride = String(process.env.LM_LAUNCH_PUBLIC_HOST || "").trim();
+const publicHostOverride = String(process.env.LLAMAFLEET_PUBLIC_HOST || "").trim();
 const modelsDir = String(process.env.MODELS_DIR || "").trim() || path.join(os.homedir(), ".lmstudio", "models");
 
 if (!apiAuthEnabled) {

@@ -1,5 +1,5 @@
 {
-  "name": "@lmlaunch/bridge-router",
+  "name": "@llamafleet/bridge-router",
   "version": "0.1.0",
   "private": true,
   "type": "module",

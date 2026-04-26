@@ -864,7 +864,7 @@ async function loadModelList(selectElementId) {
     if (warning) {
       toast(`No models found: ${warning}`);
     } else {
-      toast("No .gguf files found. Check MODELS_DIR in lmlaunch.env.");
+      toast("No .gguf files found. Check MODELS_DIR in llamafleet.env.");
     }
   } catch (error) {
     const hint = error.message.includes("401") || error.message.toLowerCase().includes("unauthorized")
@@ -1151,7 +1151,7 @@ async function refreshInstances() {
               body: JSON.stringify({ enabled: enable })
             });
           } else if (action === "delete") {
-            const confirmed = window.confirm(`Remove instance ${id} from LM Launch?`);
+            const confirmed = window.confirm(`Remove instance ${id} from LlamaFleet?`);
             if (!confirmed) return;
             await api(`/v1/instances/${id}`, {
               method: "DELETE"
