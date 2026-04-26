@@ -20,7 +20,7 @@ Every instance is reachable through a single **OpenAI-compatible API** at `http:
 - Compact VRAM bars in the GPU column with utilisation %, temperature, and power
 - Log viewer with auto-tail and clone-setup action per instance
 
-LlamaFleet uses GGUF models via `llama-server` directly — no LM Studio required. Works on NVIDIA (including pre-Ampere V100/10xx/20xx), AMD, Apple Silicon, and CPU.
+LlamaFleet uses GGUF models via `llama-server` directly — no LM Studio required. Works on NVIDIA (including pre-Ampere V100/10xx/20xx), AMD, and CPU.
 
 ## Dashboard
 
