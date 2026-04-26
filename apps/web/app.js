@@ -682,7 +682,9 @@ function formatGpuStats(inst) {
     const gClock = gpu.graphics_clock_mhz ?? "n/a";
     const mClock = gpu.memory_clock_mhz ?? "n/a";
     const util = gpu.utilization_percent ?? "n/a";
-    return `GPU ${escapeHtml(gpu.id)}<br><span class="gpu-line">${escapeHtml(gpu.name || "Unknown")}</span><br><span class="gpu-line">mem ${used}/${total} MiB${memPct !== null ? ` (${memPct}%)` : ""} • util ${util}%</span><br><span class="gpu-line">temp ${temp}C • gfx ${gClock} MHz • mem ${mClock} MHz</span>`;
+    const power = gpu.power_draw_w != null ? `${Number(gpu.power_draw_w).toFixed(1)} W` : null;
+    const powerStr = power ? ` • pwr ${power}` : "";
+    return `GPU ${escapeHtml(gpu.id)}<br><span class="gpu-line">${escapeHtml(gpu.name || "Unknown")}</span><br><span class="gpu-line">mem ${used}/${total} MiB${memPct !== null ? ` (${memPct}%)` : ""} • util ${util}%${powerStr}</span><br><span class="gpu-line">temp ${temp}C • gfx ${gClock} MHz • mem ${mClock} MHz</span>`;
   }).join("<hr class=\"gpu-divider\" />");
 }
 

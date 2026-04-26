@@ -778,7 +778,7 @@ app.get("/v1/gpus", (_req, res) => {
   execFile(
     "nvidia-smi",
     [
-      "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu,clocks.current.graphics,clocks.current.memory",
+      "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu,clocks.current.graphics,clocks.current.memory,power.draw",
       "--format=csv,noheader,nounits"
     ],
     (nvError, nvStdout) => {
@@ -788,7 +788,7 @@ app.get("/v1/gpus", (_req, res) => {
           .split("\n")
           .filter(Boolean)
           .map((line) => {
-            const [index, name, total, used, util, temp, graphicsClock, memoryClock] = line.split(",").map((x) => x.trim());
+            const [index, name, total, used, util, temp, graphicsClock, memoryClock, powerDraw] = line.split(",").map((x) => x.trim());
             const parseMaybeNumber = (value) => { const num = Number(value); return Number.isFinite(num) ? num : null; };
             return {
               id: index,
@@ -798,14 +798,15 @@ app.get("/v1/gpus", (_req, res) => {
               utilization_percent: Number(util),
               temperature_c: parseMaybeNumber(temp),
               graphics_clock_mhz: parseMaybeNumber(graphicsClock),
-              memory_clock_mhz: parseMaybeNumber(memoryClock)
+              memory_clock_mhz: parseMaybeNumber(memoryClock),
+              power_draw_w: parseMaybeNumber(powerDraw)
             };
           });
         return res.json({ data, diagnostics: { runtimeDetected: true, detail: "nvidia-smi is available to the bridge service" } });
       }
 
       // NVIDIA unavailable — try AMD ROCm.
-      execFile("rocm-smi", ["--showmeminfo", "vram", "--showuse", "--showtemp", "--showproductname", "--json"], (rocmError, rocmStdout) => {
+      execFile("rocm-smi", ["--showmeminfo", "vram", "--showuse", "--showtemp", "--showproductname", "--showpower", "--json"], (rocmError, rocmStdout) => {
         if (rocmError) {
           return res.json({
             data: [],
@@ -829,7 +830,8 @@ app.get("/v1/gpus", (_req, res) => {
               utilization_percent: parseMaybeNumber(d["GPU use (%)"] ?? d["GPU Use (%)"]),
               temperature_c: parseMaybeNumber(d["Temperature (Sensor edge) (C)"] ?? d["Temperature (Sensor junction) (C)"]),
               graphics_clock_mhz: null,
-              memory_clock_mhz: null
+              memory_clock_mhz: null,
+              power_draw_w: parseMaybeNumber(d["Average Graphics Package Power (W)"] ?? d["Current Socket Graphics Package Power (W)"])
             };
           });
           return res.json({ data, diagnostics: { runtimeDetected: true, detail: "rocm-smi is available to the bridge service" } });
