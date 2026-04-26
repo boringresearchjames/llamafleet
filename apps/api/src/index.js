@@ -1675,19 +1675,6 @@ app.post("/v1/instances/start", async (req, res) => {
     });
   }
 
-  // Model-name uniqueness check: prevent ambiguous routing when the same model
-  // basename is already served by a running instance.
-  const newModelStem = resolveModelName(modelToUse);
-  const modelConflict = activeInstances.find((x) =>
-    x.effectiveModel && resolveModelName(x.effectiveModel) === newModelStem
-  );
-  if (modelConflict) {
-    return res.status(409).json({
-      error: `A running instance already serves model '${newModelStem}'. Stop it first, or use a different model path to avoid routing ambiguity.`,
-      conflictingInstanceId: modelConflict.id
-    });
-  }
-
   const usesGpu = runtimeBackend !== "cpu";
   if (usesGpu && launchGpus.length === 0) {
     return res.status(400).json({
