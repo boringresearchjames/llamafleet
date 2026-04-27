@@ -2164,10 +2164,10 @@ function renderRepoFiles(repoId, files) {
         <td class="hub-file-actions">
           <div id="${progId}"></div>
           <button class="hub-pin-btn${pinned ? " hub-pinned" : ""}"
-            onclick="togglePin(${JSON.stringify(repoId)},${JSON.stringify(f.filename)},${JSON.stringify(f.quantTier)},${JSON.stringify(f.quantLabel)},this)"
+            onclick="togglePin('${repoId}','${f.filename}','${f.quantTier}','${f.quantLabel}',this)"
             title="${pinned ? "Unpin" : "Pin to Favorites"}">&#x2605;</button>
           <button class="hub-dl-btn"
-            onclick="handleDownloadClick(${JSON.stringify(repoId)},${JSON.stringify(f.filename)},${JSON.stringify(f.quantTier)},${JSON.stringify(f.quantLabel)},this)"
+            onclick="handleDownloadClick('${repoId}','${f.filename}','${f.quantTier}','${f.quantLabel}',this)"
             title="Download">\u2193 Download</button>
         </td>
       </tr>`;

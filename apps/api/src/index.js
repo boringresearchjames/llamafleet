@@ -2439,7 +2439,7 @@ app.get("/v1/hub/repo/files", requireAdminToken, async (req, res) => {
     const siblings = (model.siblings || []).filter((s) => s.rfilename && s.rfilename.toLowerCase().endsWith(".gguf"));
     const files = siblings.map((s) => {
       const { tier, label } = parseQuantTier(s.rfilename);
-      return { filename: s.rfilename, size: s.size || null, quantLabel: label, quantTier: tier };
+      return { filename: s.rfilename, size: s.size || s.lfs?.size || null, quantLabel: label, quantTier: tier };
     });
     // Sort: recommended first, then balanced, quality, imatrix, large, other
     const tierOrder = { recommended: 0, balanced: 1, quality: 2, imatrix: 3, large: 4, other: 5 };
