@@ -14,6 +14,11 @@
     "install:deps": "npm --prefix apps/api install --no-bin-links && npm --prefix apps/host-bridge install --no-bin-links && npm --prefix apps/bridge-router install --no-bin-links",
     "install:linux": "npm run install:deps && bash scripts/install-systemd.sh",
     "build:release": "bash scripts/build-release.sh",
-    "install:llama-server": "sudo bash scripts/install-llama-server.sh"
+    "install:llama-server": "sudo bash scripts/install-llama-server.sh",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
   }
 }

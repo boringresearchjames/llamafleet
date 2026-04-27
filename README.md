@@ -1,6 +1,6 @@
 # LlamaFleet
 
-**Run multiple llama.cpp instances in parallel, each pinned to its own GPUs, from one browser dashboard.**
+**Run multiple llama.cpp instances in parallel — GPU-accelerated, CPU-only, or any heterogeneous mix — from one browser dashboard.**
 
 LlamaFleet is a lightweight Node.js control plane and operator dashboard for multi-instance llama.cpp deployments. It partitions a multi-GPU machine — assigning specific GPUs to specific models — and manages the full lifecycle of each instance (launch, reload, drain, restart, remove) from a single browser UI without touching a terminal.
 
@@ -13,6 +13,7 @@ Every instance is reachable through a single **OpenAI-compatible API** at `http:
 - Headless process management — start, stop, drain, kill, remove from the browser or API
 - OpenAI-compatible reverse proxy per instance — all `llama-server` processes bind to `127.0.0.1`; one port for everything
 - **Named model routing with round-robin pool support** — `POST /v1/chat/completions` with `"model": "MyModel"` round-robins across all running instances of that model; append `-1`, `-2`, etc. to pin to a specific instance (e.g. `"model": "MyModel-1"`). `GET /v1/models` returns both the pool entry and each pinned alias so any OpenAI client can discover them automatically.
+- **Heterogeneous compute pools** — combine GPU-accelerated (NVIDIA/AMD/Intel), CPU-only, and mixed-offload `llama-server` instances in the same round-robin pool under a single model name. Run a fast CUDA instance alongside a CPU fallback, or pool instances across different GPU vendors, and LlamaFleet distributes load across all of them automatically.
 - Global bearer token auth for both dashboard and all proxy traffic
 - Config profiles — save a model + GPU + context + TTL combination and relaunch in one click
 - Auto-restart with configurable backoff on unclean exits
