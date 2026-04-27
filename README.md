@@ -31,19 +31,22 @@ LlamaFleet uses GGUF models via `llama-server` directly — no LM Studio or Olla
 
 ## Why LlamaFleet instead of Ollama / LM Studio?
 
+All three tools are built on top of `llama.cpp`, so they share the same hardware support and quantisation formats. The differences are in how much control you get over each running process and how you compose them.
+
 | | LlamaFleet | Ollama | LM Studio |
 |---|---|---|---|
-| Direct `llama-server` control | ✅ Full flags, GPU layers, ctx, threads | ❌ Abstracted | ❌ Abstracted |
-| Per-instance GPU pinning | ✅ Explicit `CUDA_VISIBLE_DEVICES` per process | ❌ Global | ❌ Global |
-| Multiple concurrent instances | ✅ Unlimited, independent processes | ⚠ One model at a time | ⚠ Manual |
-| Round-robin load pooling | ✅ Built-in, OpenAI-compatible | ❌ | ❌ |
-| Heterogeneous pools (GPU + CPU) | ✅ Mix any runtimes under one model name | ❌ | ❌ |
-| Pre-Ampere hardware (V100, 10xx, 20xx) | ✅ llama.cpp supports it | ⚠ Hit-or-miss | ⚠ Hit-or-miss |
-| Any GGUF from any source | ✅ Scan local paths + HF Hub browser | ⚠ Registry only | ⚠ Curated |
-| Browser dashboard + REST API | ✅ | ❌ API only | ✅ GUI only |
-| Multi-user / cloud deployment | ❌ Single-tenant by design | ✅ | ✅ |
+| Pass-through `llama-server` flags | ✅ Any flag, edited per instance | ⚠ Subset via `Modelfile` params | ⚠ Subset via GUI/JSON |
+| Per-instance GPU pinning | ✅ Explicit `CUDA_VISIBLE_DEVICES` per process | ⚠ Global env var | ⚠ Per-model GPU select (recent versions) |
+| Multiple models loaded at once | ✅ Unlimited, independent processes | ✅ Via `OLLAMA_MAX_LOADED_MODELS` | ✅ JIT-loaded |
+| Round-robin pooling under one model name | ✅ Built-in across instances | ❌ | ❌ |
+| Heterogeneous pools (mix GPU/CPU/runtimes) | ✅ Mix any runtimes under one model name | ❌ | ❌ |
+| Any local GGUF | ✅ Scan paths + HF Hub browser | ✅ `FROM ./model.gguf` in Modelfile | ✅ Local files + HF browser |
+| Browser dashboard | ✅ | ❌ (3rd-party only) | ❌ Desktop GUI only |
+| OpenAI-compatible REST API | ✅ | ✅ | ✅ |
+| Headless server / SSH box / systemd | ✅ Designed for it | ✅ | ❌ Desktop app |
+| Multi-user auth / RBAC | ❌ Single shared bearer token | ❌ No auth | ❌ No auth |
 
-**The short version:** if you need to carve up a multi-GPU box, run several models simultaneously with explicit hardware control, and talk to all of them through one OpenAI endpoint — LlamaFleet is built for that. If you want a managed model registry with a polished consumer UX and don't need per-process GPU pinning, Ollama is the simpler choice.
+**The short version:** if you need to carve up a multi-GPU box into several `llama-server` processes with explicit per-process hardware control, and pool them behind a single OpenAI endpoint, LlamaFleet is built for that. If you want a one-command model registry on your laptop, Ollama is simpler. If you want a polished desktop GUI for trying models locally, LM Studio is hard to beat.
 
 ---
 
