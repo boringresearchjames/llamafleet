@@ -2131,7 +2131,7 @@ async function toggleRepoFiles(repoId) {
   if (tbody) tbody.innerHTML = '<tr><td colspan="4"><span class="hub-empty">Loading files\u2026</span></td></tr>';
 
   try {
-    const res = await api(`/v1/hub/repo/${encodeURIComponent(repoId)}/files`, { headers: hfHeaders() });
+    const res = await api(`/v1/hub/repo/files?id=${encodeURIComponent(repoId)}`, { headers: hfHeaders() });
     hubRepoFilesCache[repoId] = res.data || [];
     renderRepoFiles(repoId, res.data || []);
   } catch (err) {

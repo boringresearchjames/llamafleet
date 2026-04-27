@@ -2429,9 +2429,10 @@ app.get("/v1/hub/search", requireAdminToken, async (req, res) => {
 });
 
 // GET /v1/hub/repo/:repoId*/files
-app.get("/v1/hub/repo/:repoId(*)/files", requireAdminToken, async (req, res) => {
+app.get("/v1/hub/repo/files", requireAdminToken, async (req, res) => {
   try {
-    const repoId = req.params.repoId;
+    const repoId = String(req.query.id || "").trim();
+    if (!repoId) return res.status(400).json({ error: "id required" });
     const hfToken = String(req.headers["x-hf-token"] || "").trim() || undefined;
     const hfRes = await hfFetch(`/api/models/${encodeURIComponent(repoId)}`, hfToken);
     const model = await hfRes.json();
