@@ -741,8 +741,10 @@ function resolveModelName(effectiveModel) {
  * Returns one of:
  *   { instance }              — exactly one match found
  *   { error, status }         — 400 / 404
- *   { error, status, instances } — 409 conflict (multiple matches)
+ *   { instance } — single match or round-robin selected from multiple matches
  */
+const modelRoundRobinCounters = new Map();
+
 function resolveInstanceByModelName(modelName) {
   if (!modelName) {
     return { error: "model field is required", status: 400 };
@@ -764,14 +766,15 @@ function resolveInstanceByModelName(modelName) {
   if (matches.length === 0) {
     return { error: `No running instance found for model '${modelName}'`, status: 404 };
   }
-  if (matches.length > 1) {
-    return {
-      error: `Ambiguous: ${matches.length} running instances serve model '${modelName}'. Use the per-instance proxy URL instead.`,
-      status: 409,
-      instances: matches.map((x) => x.id)
-    };
+  if (matches.length === 1) {
+    return { instance: matches[0] };
   }
-  return { instance: matches[0] };
+
+  // Multiple instances share the same model name — round-robin across them.
+  const key = modelName;
+  const counter = (modelRoundRobinCounters.get(key) || 0) % matches.length;
+  modelRoundRobinCounters.set(key, counter + 1);
+  return { instance: matches[counter] };
 }
 
 // ---------------------------------------------------------------------------
@@ -1736,10 +1739,12 @@ app.post("/v1/instances/start", async (req, res) => {
   };
 
   // Compute a unique modelRouteName by appending -2, -3, etc. if the base
-  // name is already taken by a running instance.
+  // name is already taken by any registered instance (stopped or running),
+  // excluding the instance being replaced (if re-using an ID).
   const baseStem = resolveModelName(modelToUse) || modelToUse;
   const usedNames = new Set(
-    activeInstances
+    state.instances
+      .filter((x) => x.id !== instanceId)
       .map((x) => x.modelRouteName || resolveModelName(x.effectiveModel) || x.effectiveModel)
       .filter(Boolean)
   );
@@ -1866,6 +1871,23 @@ app.post("/v1/instances/:id/restart", async (req, res) => {
     modelParallel: instance.modelParallel || null,
     restartPolicy: instance.restartPolicy || { mode: "never" }
   };
+
+  // Reassign modelRouteName to ensure it's unique among all other registered
+  // instances (stopped or running) before relaunching.
+  const restartBaseStem = resolveModelName(instance.effectiveModel) || instance.effectiveModel;
+  const restartUsedNames = new Set(
+    state.instances
+      .filter((x) => x.id !== instance.id)
+      .map((x) => x.modelRouteName || resolveModelName(x.effectiveModel) || x.effectiveModel)
+      .filter(Boolean)
+  );
+  let restartRouteName = restartBaseStem;
+  if (restartUsedNames.has(restartBaseStem)) {
+    let n = 2;
+    while (restartUsedNames.has(`${restartBaseStem}-${n}`)) n++;
+    restartRouteName = `${restartBaseStem}-${n}`;
+  }
+  instance.modelRouteName = restartRouteName;
 
   instance.state = "starting";
   instance.lastError = null;
