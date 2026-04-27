@@ -590,6 +590,9 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+// Safe for both HTML text content and attribute values (same encoding needed).
+const escapeAttr = escapeHtml;
+
 // Show only the last 3 path segments (author/repo/file.gguf) for display
 function trimModelPath(modelPath) {
   const parts = String(modelPath).replace(/\\/g, "/").split("/");
@@ -1889,13 +1892,17 @@ function renderFavorites() {
     list.innerHTML = '<span class="hub-empty">No favorites yet. Pin models from search results below.</span>';
     return;
   }
-  list.innerHTML = hubFavorites.map((f) => `
+  list.innerHTML = hubFavorites.map((f) => {
+    const rId = escapeAttr(f.repoId);
+    const fn = escapeAttr(f.filename);
+    return `
     <div class="hub-fav-item">
       <span class="hub-fav-quant">${quantBadgeHtml(f.quantTier || "other", f.quantLabel || "GGUF")}</span>
-      <span class="hub-fav-name" title="${f.repoId} / ${f.filename}">${f.repoId.split("/").pop()} &mdash; ${f.filename}</span>
-      <button class="hub-fav-launch" onclick="hubLaunchFav('${f.repoId}','${f.filename}')">&#x26A1; Launch</button>
-      <button class="hub-fav-unpin" title="Unpin" onclick="unpinModel('${f.repoId}','${f.filename}')">&#x2715;</button>
-    </div>`).join("");
+      <span class="hub-fav-name" title="${rId} / ${fn}">${escapeHtml(f.repoId.split("/").pop())} &mdash; ${escapeHtml(f.filename)}</span>
+      <button class="hub-fav-launch" data-action="fav-launch" data-repo-id="${rId}" data-filename="${fn}">&#x26A1; Launch</button>
+      <button class="hub-fav-unpin" title="Unpin" data-action="fav-unpin" data-repo-id="${rId}" data-filename="${fn}">&#x2715;</button>
+    </div>`;
+  }).join("");
 }
 
 function hubLaunchFav(repoId, filename) {
@@ -1959,15 +1966,18 @@ function renderDownloads(jobs) {
     const pct = j.pct != null ? j.pct : (j.bytesReceived && j.totalBytes ? Math.round(j.bytesReceived / j.totalBytes * 100) : null);
     const barPct = pct ?? 0;
     const statusClass = `hub-dl-status-${j.status}`;
+    const jId = escapeAttr(j.id);
+    const jRId = escapeAttr(j.repoId);
+    const jFn = escapeAttr(j.filename);
     let actions = "";
     if (j.status === "downloading" || j.status === "pending") {
-      actions = `<button class="hub-dl-cancel" onclick="abortDownload('${j.id}')">&#x23F8; Pause</button>`;
+      actions = `<button class="hub-dl-cancel" data-action="dl-pause" data-job-id="${jId}">&#x23F8; Pause</button>`;
     } else if (j.status === "paused") {
-      actions = `<button class="hub-dl-resume" onclick="resumeDownload('${j.repoId}','${j.filename}')">&#x25B6; Resume</button>
-               <button class="hub-dl-discard" onclick="discardDownload('${j.id}')">&#x1F5D1; Discard</button>`;
+      actions = `<button class="hub-dl-resume" data-action="dl-resume" data-repo-id="${jRId}" data-filename="${jFn}">&#x25B6; Resume</button>
+               <button class="hub-dl-discard" data-action="dl-discard" data-job-id="${jId}">&#x1F5D1; Discard</button>`;
     } else if (j.status === "error") {
-      actions = `<button class="hub-dl-resume" onclick="resumeDownload('${j.repoId}','${j.filename}')">&#x25B6; Retry</button>
-               <button class="hub-dl-discard" onclick="discardDownload('${j.id}')">&#x1F5D1; Discard</button>`;
+      actions = `<button class="hub-dl-resume" data-action="dl-resume" data-repo-id="${jRId}" data-filename="${jFn}">&#x25B6; Retry</button>
+               <button class="hub-dl-discard" data-action="dl-discard" data-job-id="${jId}">&#x1F5D1; Discard</button>`;
     }
     const metaStr = j.totalBytes
       ? `${fmtBytes(j.bytesReceived)} / ${fmtBytes(j.totalBytes)}`
@@ -1976,9 +1986,9 @@ function renderDownloads(jobs) {
     const etaSec = j.bytesPerSec && j.totalBytes ? Math.round((j.totalBytes - j.bytesReceived) / j.bytesPerSec) : null;
     const etaStr = etaSec != null && etaSec > 0 ? ` (${etaSec < 60 ? etaSec + "s" : etaSec < 3600 ? Math.round(etaSec / 60) + "m" : Math.floor(etaSec / 3600) + "h " + Math.round((etaSec % 3600) / 60) + "m"})` : "";
     return `
-      <div class="hub-dl-row" id="dlrow-${j.id}">
-        <span class="hub-dl-name" title="${j.repoId}/${j.filename}">${j.filename}</span>
-        <span class="hub-dl-meta ${statusClass}">${j.status.toUpperCase()}${pct != null ? "  " + pct + "%" : ""}${rateStr}${etaStr}</span>
+      <div class="hub-dl-row" id="dlrow-${jId}">
+        <span class="hub-dl-name" title="${jRId}/${jFn}">${escapeHtml(j.filename)}</span>
+        <span class="hub-dl-meta ${statusClass}">${escapeHtml(j.status.toUpperCase())}${pct != null ? "  " + pct + "%" : ""}${rateStr}${etaStr}</span>
         <div class="hub-dl-bar-wrap"><div class="hub-dl-bar-fill" style="width:${barPct}%"></div></div>
         <span class="hub-dl-meta">${metaStr}</span>
         ${actions}
@@ -2118,17 +2128,20 @@ function renderHubResults(models) {
     list.innerHTML = '<span class="hub-empty">No results found.</span>';
     return;
   }
-  list.innerHTML = models.map((m) => `
-    <div class="hub-result-row" id="hubrow-${CSS.escape(m.id)}" data-repoid="${m.id}">
-      <div class="hub-result-header" onclick="toggleRepoFiles('${m.id}')">
-        <span class="hub-result-name">${m.id}</span>
+  list.innerHTML = models.map((m) => {
+    const mId = escapeAttr(m.id);
+    return `
+    <div class="hub-result-row" id="hubrow-${CSS.escape(m.id)}" data-repo-id="${mId}">
+      <div class="hub-result-header" data-action="toggle-repo">
+        <span class="hub-result-name">${escapeHtml(m.id)}</span>
         <span class="hub-result-meta">\u2193 ${fmtNum(m.downloads)}  &hearts; ${fmtNum(m.likes)}</span>
         <span class="hub-result-expand">&#x25BA;</span>
       </div>
       <table class="hub-files-table" id="hubtable-${CSS.escape(m.id)}">
         <tbody id="hubtbody-${CSS.escape(m.id)}"><tr><td colspan="4"><span class="hub-empty">Loading files\u2026</span></td></tr></tbody>
       </table>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 async function toggleRepoFiles(repoId) {
@@ -2179,21 +2192,27 @@ function renderRepoFiles(repoId, files) {
     tbody.innerHTML = '<tr><td colspan="4"><span class="hub-empty">No GGUF files found.</span></td></tr>';
     return;
   }
+  const safeRepoId = escapeAttr(repoId);
   tbody.innerHTML = files.map((f) => {
     const pinned = isPinned(repoId, f.filename);
     const progId = `hubprog-${CSS.escape(repoId + "/" + f.filename)}`;
+    const fFn = escapeAttr(f.filename);
+    const fQt = escapeAttr(f.quantTier);
+    const fQl = escapeAttr(f.quantLabel);
     return `
       <tr>
-        <td class="hub-file-name">${f.filename}</td>
+        <td class="hub-file-name">${escapeHtml(f.filename)}</td>
         <td class="hub-file-size">${fmtBytes(f.size)}</td>
         <td>${quantBadgeHtml(f.quantTier, f.quantLabel)}</td>
         <td class="hub-file-actions">
           <div id="${progId}"></div>
           <button class="hub-pin-btn${pinned ? " hub-pinned" : ""}"
-            onclick="togglePin('${repoId}','${f.filename}','${f.quantTier}','${f.quantLabel}',this)"
+            data-action="pin" data-repo-id="${safeRepoId}" data-filename="${fFn}"
+            data-quant-tier="${fQt}" data-quant-label="${fQl}"
             title="${pinned ? "Unpin" : "Pin to Favorites"}">&#x2605;</button>
           <button class="hub-dl-btn"
-            onclick="handleDownloadClick('${repoId}','${f.filename}','${f.quantTier}','${f.quantLabel}',this)"
+            data-action="download" data-repo-id="${safeRepoId}" data-filename="${fFn}"
+            data-quant-tier="${fQt}" data-quant-label="${fQl}"
             title="Download">\u2193 Download</button>
         </td>
       </tr>`;
@@ -2223,7 +2242,51 @@ async function handleDownloadClick(repoId, filename, quantTier, quantLabel, btn)
 
 // ── Hub page initialisation ──────────────────────────────────────────────────
 
+/**
+ * Attach delegated click listeners once to the stable container elements so
+ * that dynamically re-rendered rows don't need inline onclick handlers.
+ * Must be called once after the containers exist in the DOM.
+ */
+function initHubEventDelegation() {
+  const favList = document.getElementById("hubFavoritesList");
+  if (favList) favList.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    const { action, repoId, filename } = btn.dataset;
+    if (action === "fav-launch") hubLaunchFav(repoId, filename);
+    else if (action === "fav-unpin") unpinModel(repoId, filename);
+  });
+
+  const dlList = document.getElementById("hubDownloadsList");
+  if (dlList) dlList.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    const { action, jobId, repoId, filename } = btn.dataset;
+    if (action === "dl-pause") abortDownload(jobId);
+    else if (action === "dl-resume") resumeDownload(repoId, filename);
+    else if (action === "dl-discard") discardDownload(jobId);
+  });
+
+  const resultsList = document.getElementById("hubResultsList");
+  if (resultsList) resultsList.addEventListener("click", (e) => {
+    // Header click — toggle file list
+    const header = e.target.closest("[data-action='toggle-repo']");
+    if (header) {
+      const row = header.closest("[data-repo-id]");
+      if (row) toggleRepoFiles(row.dataset.repoId);
+      return;
+    }
+    // File-row button click
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    const { action, repoId, filename, quantTier, quantLabel } = btn.dataset;
+    if (action === "pin") togglePin(repoId, filename, quantTier, quantLabel, btn);
+    else if (action === "download") handleDownloadClick(repoId, filename, quantTier, quantLabel, btn);
+  });
+}
+
 function initHubPage() {
+  initHubEventDelegation();
   // Token input
   const tokenInput = document.getElementById("hfTokenInput");
   const tokenSave = document.getElementById("hfTokenSave");

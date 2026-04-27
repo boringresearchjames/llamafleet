@@ -131,7 +131,9 @@ function loadState() {
 }
 
 function saveState(state) {
-  fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+  const tmp = stateFile + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+  fs.renameSync(tmp, stateFile);
   writeSharedConfig(state);
 }
 
