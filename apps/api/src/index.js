@@ -2434,7 +2434,7 @@ app.get("/v1/hub/repo/files", requireAdminToken, async (req, res) => {
     const repoId = String(req.query.id || "").trim();
     if (!repoId) return res.status(400).json({ error: "id required" });
     const hfToken = String(req.headers["x-hf-token"] || "").trim() || undefined;
-    const hfRes = await hfFetch(`/api/models/${repoId}`, hfToken);
+    const hfRes = await hfFetch(`/api/models/${repoId}?blobs=true`, hfToken);
     const model = await hfRes.json();
     const siblings = (model.siblings || []).filter((s) => s.rfilename && s.rfilename.toLowerCase().endsWith(".gguf"));
     const files = siblings.map((s) => {
