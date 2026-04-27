@@ -1596,18 +1596,16 @@ app.get("/v1/instances", async (_req, res) => {
     const gpuById = new Map(gpuData.map((gpu) => [String(gpu.id), gpu]));
     state.instances = state.instances.map((inst) => {
       const runtime = bridgeState.data.find((x) => x.instanceId === inst.id);
-      const runtimeInflight = Number(runtime?.inflightRequests);
-      const runtimeQueueDepth = Number(runtime?.queueDepth);
       const localInflight = Number(inst.inflightRequests || 0);
       const localQueueDepth = Number(inst.queueDepth || 0);
-      // Prefer bridge runtime counters when available so stale local cache values
-      // do not keep an instance stuck in "Processing" after requests complete.
-      const mergedInflight = runtime
-        ? (Number.isFinite(runtimeInflight) ? Math.max(0, runtimeInflight) : 0)
-        : (Number.isFinite(localInflight) ? Math.max(0, localInflight) : 0);
-      const mergedQueueDepth = runtime
-        ? (Number.isFinite(runtimeQueueDepth) ? Math.max(0, runtimeQueueDepth) : 0)
-        : (Number.isFinite(localQueueDepth) ? Math.max(0, localQueueDepth) : 0);
+      // The API is the sole proxy — only it tracks inflight requests accurately.
+      // The bridge reports inflightRequests:0 always (it doesn't proxy traffic).
+      // Reset counters to 0 only when the bridge says the instance is stopped/errored
+      // so stuck counters are cleared on instance death but live counts are preserved.
+      const runtimeState = runtime?.state;
+      const instanceDead = !runtime || runtimeState === "stopped" || runtimeState === "error";
+      const mergedInflight = instanceDead ? 0 : (Number.isFinite(localInflight) ? Math.max(0, localInflight) : 0);
+      const mergedQueueDepth = instanceDead ? 0 : (Number.isFinite(localQueueDepth) ? Math.max(0, localQueueDepth) : 0);
       const assignedGpus = Array.isArray(inst.gpus) ? inst.gpus.map((g) => String(g)) : [];
       const gpuStats = assignedGpus
         .map((id) => gpuById.get(id))
