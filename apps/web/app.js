@@ -2094,7 +2094,7 @@ function renderHubResults(models) {
   }
   list.innerHTML = models.map((m) => `
     <div class="hub-result-row" id="hubrow-${CSS.escape(m.id)}" data-repoid="${m.id}">
-      <div class="hub-result-header" onclick="toggleRepoFiles(${JSON.stringify(m.id)})">
+      <div class="hub-result-header" onclick="toggleRepoFiles('${m.id}')">
         <span class="hub-result-name">${m.id}</span>
         <span class="hub-result-meta">\u2193 ${fmtNum(m.downloads)}  &hearts; ${fmtNum(m.likes)}</span>
         <span class="hub-result-expand">&#x25BA;</span>
