@@ -2459,7 +2459,8 @@ app.get("/v1/hub/collections", requireAdminToken, async (req, res) => {
     "lmstudio-community": "lmstudio-community",
     thebloke: "TheBloke",
   };
-  const author = authorMap[source] || source;
+  const author = authorMap[source];
+  if (!author) return res.status(400).json({ error: "Unknown source" });
   const hfToken = String(req.headers["x-hf-token"] || "").trim() || undefined;
   try {
     const params = new URLSearchParams({ author, filter: "gguf", sort: "downloads", direction: "-1", limit: "30", full: "false" });
@@ -2484,6 +2485,11 @@ app.post("/v1/hub/download", requireAdminToken, async (req, res) => {
     const hfToken = String(req.body?.hfToken || req.headers["x-hf-token"] || "").trim() || undefined;
 
     if (!repoId || !filename) return res.status(400).json({ error: "repoId and filename required" });
+
+    // Validate repoId: must be owner/repo — no path traversal into the HF URL
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.\-]*\/[a-zA-Z0-9][a-zA-Z0-9_.\-]*$/.test(repoId)) {
+      return res.status(400).json({ error: "Invalid repoId format" });
+    }
 
     // Sanitize filename — no path traversal
     const safeFilename = path.basename(filename);
@@ -2533,7 +2539,15 @@ app.post("/v1/hub/download", requireAdminToken, async (req, res) => {
         const dlRes = await fetch(dlUrl, { headers, signal: job.abortController.signal, redirect: "follow" });
         if (!dlRes.ok) throw new Error(`HF download ${dlRes.status}`);
 
+        // If we requested a byte range but the server responded 200 (no range support),
+        // restart from zero — appending the full file to a partial file would corrupt it.
+        if (resumedFrom > 0 && dlRes.status === 200) {
+          resumedFrom = 0;
+          job.bytesReceived = 0;
+        }
+
         const contentLength = dlRes.headers.get("content-length");
+        // For 206 Partial Content, content-length is remaining bytes; add resumedFrom for total.
         job.totalBytes = contentLength ? resumedFrom + Number(contentLength) : null;
 
         const fileHandle = fs.createWriteStream(partPath, { flags: resumedFrom > 0 ? "a" : "w" });
@@ -2546,11 +2560,14 @@ app.post("/v1/hub/download", requireAdminToken, async (req, res) => {
           const { done, value } = await reader.read();
           if (done) break;
           if (streamErr) throw streamErr;
-          fileHandle.write(value);
+          // Honour backpressure: if the write buffer is full, wait for drain before continuing
+          const canContinue = fileHandle.write(value);
           job.bytesReceived += value.length;
+          if (!canContinue) await new Promise((resolve) => fileHandle.once("drain", resolve));
         }
         if (streamErr) throw streamErr;
-        fileHandle.close();
+        // fileHandle.end() flushes all pending writes and closes the stream; close() does not wait.
+        await new Promise((resolve, reject) => fileHandle.end((err) => (err ? reject(err) : resolve())));
 
         // Rename .part → final
         fs.renameSync(partPath, destPath);
@@ -2569,6 +2586,18 @@ app.post("/v1/hub/download", requireAdminToken, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// DELETE /v1/hub/downloads  — clear all non-active (done / paused / error) jobs
+app.delete("/v1/hub/downloads", requireAdminToken, (_req, res) => {
+  let cleared = 0;
+  for (const [id, job] of hubDownloadJobs.entries()) {
+    if (job.status !== "downloading" && job.status !== "pending") {
+      hubDownloadJobs.delete(id);
+      cleared++;
+    }
+  }
+  res.json({ ok: true, cleared });
 });
 
 // GET /v1/hub/downloads

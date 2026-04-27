@@ -18,7 +18,7 @@ NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=true
-ReadWritePaths=/var/lib/llamafleet /opt/llamafleet/data
+ReadWritePaths=/var/lib/llamafleet /opt/llamafleet/data /home
 
 [Install]
 WantedBy=multi-user.target
