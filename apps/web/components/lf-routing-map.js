@@ -54,7 +54,7 @@ class LfRoutingMap extends HTMLElement {
 
     if (isPool) {
       const instCards = members.map(({ inst, routeName }) => {
-        const gpus = Array.isArray(inst.gpus) ? inst.gpus.join(', ') : '-';
+        const gpuLabel = Array.isArray(inst.gpus) && inst.gpus.length > 0 ? `GPU ${inst.gpus.join(', ')}` : 'CPU';
         const state = String(inst.state || 'unknown').toLowerCase();
         const isBase = routeName === baseStem;
         const pinnedName = isBase ? `${baseStem}-1` : routeName;
@@ -62,7 +62,7 @@ class LfRoutingMap extends HTMLElement {
         return `<div class="route-inst-card">
           <div class="route-inst-card-top">
             <span class="state-dot state-${state}"></span>
-            <span class="route-inst-gpu-label">GPU ${escapeHtml(gpus)}</span>
+            <span class="route-inst-gpu-label">${escapeHtml(gpuLabel)}</span>
           </div>
           <div class="route-inst-profile-name">${escapeHtml(inst.profileName || inst.id.slice(0, 8))}</div>
           ${pinSection}
@@ -84,20 +84,20 @@ class LfRoutingMap extends HTMLElement {
       </div>`;
     } else {
       const { inst, routeName } = members[0];
-      const gpus = Array.isArray(inst.gpus) ? inst.gpus.join(', ') : '-';
+      const gpuLabel = Array.isArray(inst.gpus) && inst.gpus.length > 0 ? `GPU ${inst.gpus.join(', ')}` : 'CPU';
       const state = String(inst.state || 'unknown').toLowerCase();
       return `<div class="route-group route-group-solo">
         <div class="route-group-header">
           <span class="route-group-icon route-icon-solo" title="Direct routing: all requests go to this single instance">&#x2192;</span>
           <span class="route-group-name">${escapeHtml(routeName)}</span>
-          <span class="route-group-badge route-group-badge-solo">direct &middot; GPU ${escapeHtml(gpus)}</span>
+          <span class="route-group-badge route-group-badge-solo">direct &middot; ${escapeHtml(gpuLabel)}</span>
           <button class="route-copy-btn" data-route-copy="${escapeHtml(routeName)}" title="Copy model name">Copy</button>
         </div>
         <div class="route-inst-row">
           <div class="route-inst-card">
             <div class="route-inst-card-top">
               <span class="state-dot state-${state}"></span>
-              <span class="route-inst-gpu-label">GPU ${escapeHtml(gpus)}</span>
+              <span class="route-inst-gpu-label">${escapeHtml(gpuLabel)}</span>
             </div>
             <div class="route-inst-profile-name">${escapeHtml(inst.profileName || inst.id.slice(0, 8))}</div>
           </div>

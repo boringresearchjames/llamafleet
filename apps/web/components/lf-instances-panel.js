@@ -51,7 +51,7 @@ function formatGpuStats(inst) {
   const stats = Array.isArray(inst.gpuStats) ? inst.gpuStats : [];
   if (stats.length === 0) {
     const ids = Array.isArray(inst.gpus) ? inst.gpus : [];
-    return ids.length > 0 ? `GPU ${ids.join(", ")} (telemetry pending)` : "-";
+    return ids.length > 0 ? `GPU ${ids.join(", ")} (telemetry pending)` : "CPU";
   }
   return stats.map((gpu) => {
     const used = Number(gpu.memory_used_mib ?? 0);
