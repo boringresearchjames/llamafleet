@@ -168,7 +168,20 @@ async function loadAboutInfo() {
     if (sysRes.ok) {
       const sys = await sysRes.json();
       const llamaEl = document.getElementById("aboutLlamaVer");
-      if (llamaEl) llamaEl.textContent = sys.llamaServerVersion || "—";
+      if (llamaEl) {
+        const ver = sys.llamaServerVersion;
+        if (ver && /^\d+$/.test(ver)) {
+          const a = document.createElement("a");
+          a.href = `https://github.com/ggml-org/llama.cpp/releases/tag/b${ver}`;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          a.textContent = `build ${ver}`;
+          llamaEl.textContent = "";
+          llamaEl.appendChild(a);
+        } else {
+          llamaEl.textContent = ver || "—";
+        }
+      }
       const platEl = document.getElementById("aboutPlatform");
       if (platEl) platEl.textContent = sys.platform || "—";
       const archEl = document.getElementById("aboutArch");

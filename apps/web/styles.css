@@ -2327,3 +2327,12 @@ pre {
   font-size: 12px;
 }
 
+.about-dep-ver a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.about-dep-ver a:hover {
+  text-decoration: underline;
+}
+
