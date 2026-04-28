@@ -106,15 +106,24 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
   // can legitimately take minutes), we let it run as long as the client is
   // still connected. Override per-deployment with PROXY_HEADERS_TIMEOUT_MS.
   const headersTimeoutMs = Number(process.env.PROXY_HEADERS_TIMEOUT_MS || 60_000);
+  let headersTimedOut = false;
   const headersTimer = setTimeout(() => {
-    if (!res.headersSent) abortController.abort();
+    if (!res.headersSent) {
+      headersTimedOut = true;
+      console.warn(`[proxy] headers timeout (${headersTimeoutMs}ms) instanceId=${instance.id} url=${targetUrl}`);
+      abortController.abort();
+    }
   }, headersTimeoutMs);
 
   let finalized = false;
   const finalize = () => {
     if (finalized) return;
     finalized = true;
-    updateInstanceRequestMetrics(instance, -1);
+    // GET /v1/instances replaces state.instances entries with new objects on every
+    // poll (via .map+spread), so `instance` may be a stale reference by the time
+    // finalize() runs. Look up the live object by ID to ensure the decrement lands.
+    const liveInstance = state.instances.find((x) => x.id === instance.id) || instance;
+    updateInstanceRequestMetrics(liveInstance, -1);
   };
 
   updateInstanceRequestMetrics(instance, 1);
@@ -169,14 +178,57 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
     }
 
     const stream = Readable.fromWeb(upstream.body);
-    stream.on("end", finalize);
-    stream.on("error", () => { finalize(); if (!res.writableEnded) res.end(); });
-    res.on("close", finalize);
+
+    // First-token timeout: if no bytes arrive from upstream within this window
+    // after the stream opens, the model is likely stuck (KV cache exhaustion,
+    // Qwen3 think-loop deadlock, etc.). We abort and send an SSE error event so
+    // the client gets a clean error instead of a hung connection.
+    const firstTokenMs = Number(process.env.PROXY_FIRST_TOKEN_TIMEOUT_MS || 90_000);
+    let firstTokenReceived = false;
+    const firstTokenTimer = setTimeout(() => {
+      if (firstTokenReceived || res.writableEnded) return;
+      console.warn(`[proxy] first-token timeout (${firstTokenMs}ms) instanceId=${instance.id} url=${targetUrl}`);
+      stream.destroy();
+      try {
+        const errPayload = JSON.stringify({
+          error: {
+            message: `Upstream generation timeout: no tokens produced within ${firstTokenMs}ms`,
+            type: "server_error",
+            code: "generation_timeout"
+          }
+        });
+        res.write(`data: ${errPayload}\n\ndata: [DONE]\n\n`);
+      } catch { /* headers may already be flushed */ }
+      res.end();
+      finalize();
+    }, firstTokenMs);
+
+    stream.on("data", () => {
+      if (!firstTokenReceived) {
+        firstTokenReceived = true;
+        clearTimeout(firstTokenTimer);
+      }
+    });
+    stream.on("end", () => { clearTimeout(firstTokenTimer); finalize(); });
+    stream.on("error", () => { clearTimeout(firstTokenTimer); finalize(); if (!res.writableEnded) res.end(); });
+    res.on("close", () => { clearTimeout(firstTokenTimer); finalize(); });
     stream.pipe(res);
   } catch (error) {
     clearTimeout(headersTimer);
     finalize();
-    if (abortController.signal.aborted) return;
+    if (abortController.signal.aborted) {
+      if (!res.writableEnded && !res.destroyed && !res.headersSent) {
+        const msg = headersTimedOut
+          ? `Upstream did not respond within ${headersTimeoutMs}ms`
+          : "Upstream request aborted";
+        res.status(504).json({
+          error: { message: msg, type: "server_error", param: null, code: "gateway_timeout" }
+        });
+      } else if (!res.writableEnded && !res.destroyed) {
+        res.end();
+      }
+      return;
+    }
     res.status(502).json({
       error: { message: String(error.message || error), type: "server_error", param: null, code: "upstream_error" }
     });
