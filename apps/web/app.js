@@ -1,46 +1,5 @@
-const DEFAULT_LOCAL_API_BASE = "http://localhost:8081";
-
-function normalizeApiBase(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  return raw.replace(/\/$/, "");
-}
-
-function resolveInitialApiBase() {
-  const params = new URLSearchParams(window.location.search || "");
-  const queryBase = normalizeApiBase(params.get("apiBase"));
-  const storedBase = normalizeApiBase(localStorage.getItem("apiBase") || "");
-
-  if (queryBase) {
-    localStorage.setItem("apiBase", queryBase);
-    return queryBase;
-  }
-
-  if (storedBase) {
-    return storedBase;
-  }
-
-  const origin = normalizeApiBase(window.location.origin);
-  if (window.location.protocol !== "file:" && origin && origin !== "null") {
-    return origin;
-  }
-
-  return DEFAULT_LOCAL_API_BASE;
-}
-
-const settings = {
-  apiBase: resolveInitialApiBase(),
-  token: localStorage.getItem("apiToken") || ""
-};
-
-function saveToken(token) {
-  settings.token = String(token || "").trim();
-  if (settings.token) {
-    localStorage.setItem("apiToken", settings.token);
-  } else {
-    localStorage.removeItem("apiToken");
-  }
-}
+import { settings, saveToken, api } from './api.js';
+import { store } from './store.js';
 
 function syncGlobalApiTokenInput() {
   const input = $("globalApiToken");
@@ -49,9 +8,6 @@ function syncGlobalApiTokenInput() {
   }
 }
 
-let instancesCache = [];
-let gpuTelemetryCache = [];
-let hostStatsCache = null;
 let operationPending = null;
 let operationStatusTimer = null;
 let instanceTestTargetId = null;
@@ -179,36 +135,6 @@ function activityChipHtml(inst) {
   `;
 }
 
-async function api(path, options = {}) {
-  const headers = {
-    "content-type": "application/json",
-    ...(options.headers || {})
-  };
-
-  if (settings.token) {
-    headers.authorization = `Bearer ${settings.token}`;
-  }
-
-  const response = await fetch(`${settings.apiBase}${path}`, {
-    ...options,
-    headers
-  });
-
-  const text = await response.text();
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = { raw: text };
-  }
-
-  if (!response.ok) {
-    throw new Error(data.error || text || `HTTP ${response.status}`);
-  }
-
-  return data;
-}
-
 function setGlobalApiStatusLabel(text) {
   const chip = $("globalApiStatus");
   if (chip) {
@@ -275,7 +201,7 @@ function openInstanceTestDialog(instanceId) {
     return;
   }
 
-  const inst = instancesCache.find((x) => String(x.id) === String(instanceId));
+  const inst = (store.get('instances') || []).find((x) => String(x.id) === String(instanceId));
   if (!inst) {
     toast("Instance not found for diagnostic test");
     return;
@@ -313,7 +239,7 @@ async function sendInstanceDiagnosticPrompt() {
     return;
   }
 
-  const inst = instancesCache.find((x) => String(x.id) === targetId);
+  const inst = (store.get('instances') || []).find((x) => String(x.id) === targetId);
   if (!inst) {
     toast("Selected instance is no longer available");
     return;
@@ -469,7 +395,7 @@ async function runInstanceSpeedTest() {
 
   if (!targetId) { toast('Select an instance first'); return; }
 
-  const inst = instancesCache.find((x) => String(x.id) === targetId);
+  const inst = (store.get('instances') || []).find((x) => String(x.id) === targetId);
   if (!inst) { toast('Instance not found'); return; }
 
   const modelId = String(inst.effectiveModel || inst.pendingModel || '').trim();
@@ -698,7 +624,7 @@ function formatGpuStats(inst) {
 }
 
 function cloneInstanceSetup(instanceId) {
-  const inst = instancesCache.find((x) => String(x.id) === String(instanceId));
+  const inst = (store.get('instances') || []).find((x) => String(x.id) === String(instanceId));
   if (!inst) { toast("Instance not found"); return; }
 
   // Model — add as option if not already present, then select it
@@ -770,7 +696,7 @@ function downloadTextFile(filename, content) {  const blob = new Blob([content],
   URL.revokeObjectURL(url);
 }
 
-function activeInstances(data = instancesCache) {
+function activeInstances(data = store.get('instances') || []) {
   return (data || []).filter((inst) => inst.state !== "stopped");
 }
 
@@ -850,7 +776,7 @@ $("saveGlobalApi").onclick = async () => {
     toast(`API access updated: ${requireApiKey ? "Require Key" : "Open"}`);
     // Reload dropdowns — they may have been empty because the token wasn't set
     // at page load time.
-    void loadSystemGpus("launchGpus");
+    void store.refresh('gpuHardware').catch(() => {});
     void loadModelList("launchInstanceModel");
   } catch (error) {
     toast(`API access update failed: ${error.message}`);
@@ -871,7 +797,7 @@ $("closeAll").onclick = async () => {
   }
 
   const closePoll = setInterval(() => {
-    void refreshInstances();
+    void store.refresh('instances').catch(() => {});
   }, 1000);
   setOperationPending({
     type: "system-close",
@@ -885,7 +811,7 @@ $("closeAll").onclick = async () => {
     });
     toast("All instances closed and models unloaded");
     $("configLibraryResult").textContent = JSON.stringify(payload, null, 2);
-    await refreshInstances();
+    await store.refresh('instances');
     window.close();
   } catch (error) {
     toast(`Close failed: ${error.message}`);
@@ -950,46 +876,38 @@ async function loadModelList(selectElementId) {
   }
 }
 
-async function loadSystemGpus(selectElementId = "launchGpus") {
-  try {
-    const { data = [], warning, diagnostics } = await api("/v1/gpus");
-    gpuTelemetryCache = data;
-    const gpusSelect = $(selectElementId);
-    const currentSelected = Array.from(gpusSelect.selectedOptions).map((opt) => opt.value);
+function renderGpuSelect({ data = [], warning, diagnostics } = {}) {
+  const gpusSelect = $("launchGpus");
+  if (!gpusSelect) return;
+  const currentSelected = Array.from(gpusSelect.selectedOptions).map((opt) => opt.value);
 
-    gpusSelect.innerHTML = "";
-    data.forEach((gpu) => {
-      const option = document.createElement("option");
-      option.value = gpu.id;
-      const temp = gpu.temperature_c ?? "n/a";
-      const util = gpu.utilization_percent ?? "n/a";
-      option.textContent = `GPU ${gpu.id}: ${gpu.name} (${gpu.memory_total_mib} MiB, util ${util}%, ${temp}C)`;
-      if (currentSelected.includes(gpu.id)) {
-        option.selected = true;
-      }
-      gpusSelect.appendChild(option);
-    });
-
-    applyRuntimeBackendUi();
-
-    if (warning) {
-      const diagDetail = diagnostics?.detail ? ` (${diagnostics.detail})` : "";
-      toast(`GPU runtime warning: ${warning}${diagDetail}`);
-      return;
+  gpusSelect.innerHTML = "";
+  data.forEach((gpu) => {
+    const option = document.createElement("option");
+    option.value = gpu.id;
+    const temp = gpu.temperature_c ?? "n/a";
+    const util = gpu.utilization_percent ?? "n/a";
+    option.textContent = `GPU ${gpu.id}: ${gpu.name} (${gpu.memory_total_mib} MiB, util ${util}%, ${temp}C)`;
+    if (currentSelected.includes(gpu.id)) {
+      option.selected = true;
     }
+    gpusSelect.appendChild(option);
+  });
 
-    toast(`Loaded ${data.length} GPUs`);
-  } catch (error) {
-    const hint = error.message.includes("401") || error.message.toLowerCase().includes("unauthorized")
-      ? " — enter your API token above and save"
-      : "";
-    toast(`GPU load failed: ${error.message}${hint}`);
+  applyRuntimeBackendUi();
+
+  if (warning) {
+    const diagDetail = diagnostics?.detail ? ` (${diagnostics.detail})` : "";
+    toast(`GPU runtime warning: ${warning}${diagDetail}`);
+    return;
   }
+
+  toast(`Loaded ${data.length} GPUs`);
 }
 
 // Auto-load on page load
 window.addEventListener("load", () => {
-  setTimeout(() => loadSystemGpus("launchGpus"), 300);
+  setTimeout(() => store.refresh('gpuHardware').catch(() => {}), 300);
   setTimeout(() => loadModelList("launchInstanceModel"), 450);
   $('launchInstanceModel').addEventListener('change', () => autoDetectMmproj());
   initTabs();
@@ -1095,7 +1013,7 @@ $("launchInstance").onclick = async () => {
     };
 
     const launchPoll = setInterval(() => {
-      void refreshInstances();
+      void store.refresh('instances').catch(() => {});
     }, 1000);
     setOperationPending({
       type: "launch",
@@ -1115,7 +1033,7 @@ $("launchInstance").onclick = async () => {
       setOperationPending(null);
     }
     toast("Instance started");
-    await refreshInstances();
+    await store.refresh('instances');
   } catch (error) {
     toast(`Start failed: ${error.message}`);
   }
@@ -1132,7 +1050,7 @@ function resolveDisplayRouteName(inst, allInstances) {
   const isBase = routeName === baseStem;
   if (!isBase) return routeName;
   // Check if any other active instance shares this base stem
-  const active = (allInstances || instancesCache).filter(x => x.state !== "stopped");
+  const active = (allInstances || store.get('instances') || []).filter(x => x.state !== "stopped");
   const siblings = active.filter(x => {
     const r = x.modelRouteName || x.effectiveModel || "";
     return r !== routeName && r.replace(/-\d+$/, "") === baseStem;
@@ -1180,8 +1098,8 @@ function renderHostStats(data) {
 function renderInstanceStatsFooter() {
   const tfoot = $("instanceStatsFooter");
   if (!tfoot) return;
-  if (!hostStatsCache) { tfoot.innerHTML = ""; return; }
-  const d = hostStatsCache;
+  if (!store.get('hostStats')) { tfoot.innerHTML = ""; return; }
+  const d = store.get('hostStats');
   const memPct = d.mem_total_mib > 0 ? Math.round((d.mem_used_mib / d.mem_total_mib) * 100) : 0;
   const memUsedGib = (d.mem_used_mib / 1024).toFixed(1);
   const memTotalGib = (d.mem_total_mib / 1024).toFixed(1);
@@ -1219,27 +1137,7 @@ function renderInstanceStatsFooter() {
     </tr>`;
 }
 
-async function refreshHostStats() {
-  try {
-    const data = await api("/v1/host-stats");
-    hostStatsCache = data;
-    renderHostStats(data);
-    renderInstanceStatsFooter();
-  } catch {
-    const panel = $("hostStatsPanel");
-    if (panel && panel.querySelector(".host-stats-loading")) {
-      panel.innerHTML = `<span class="host-stats-loading">Host stats unavailable</span>`;
-    }
-  }
-}
-
-async function refreshInstances() {
-  try {
-    const { data, gpus } = await api("/v1/instances");
-    if (Array.isArray(gpus)) {
-      gpuTelemetryCache = gpus;
-    }
-    instancesCache = data || [];
+function renderInstanceData(data) {
     const tbody = $("instanceRows");
     tbody.innerHTML = "";
     const logsSelect = $("logsInstanceSelect");
@@ -1329,9 +1227,6 @@ async function refreshInstances() {
     renderInstanceStatsFooter();
     applyGpuAvailability();
     renderRoutingMap();
-  } catch (error) {
-    toast(`Instances refresh failed: ${error.message}`);
-  }
 }
 
 // Single delegated handler for the instances table. Attached once at startup
@@ -1369,7 +1264,7 @@ async function handleInstanceAction(btn) {
     }
 
     toast(`Action ${action} applied on ${id}`);
-    await refreshInstances();
+    await store.refresh('instances');
   } catch (error) {
     toast(`Action failed: ${error.message}`);
   }
@@ -1399,7 +1294,7 @@ function renderRoutingMap() {
   const container = $("routingMap");
   if (!container) return;
 
-  const active = instancesCache.filter(x => x.state !== "stopped");
+  const active = (store.get('instances') || []).filter(x => x.state !== "stopped");
   if (active.length === 0) {
     container.innerHTML = `<div class="routing-empty">No active instances — start an instance to see the routing map.</div>`;
     return;
@@ -1607,7 +1502,7 @@ $("loadSelectedConfig").onclick = async () => {
     const cfgSelect = $("savedConfigSelect");
     const cfgName = cfgSelect.options[cfgSelect.selectedIndex]?.textContent || id;
     const loadPoll = setInterval(() => {
-      void refreshInstances();
+      void store.refresh('instances').catch(() => {});
     }, 1000);
     setOperationPending({
       type: "config-load",
@@ -1628,7 +1523,7 @@ $("loadSelectedConfig").onclick = async () => {
 
     $("configLibraryResult").textContent = JSON.stringify(payload, null, 2);
     toast(`Loaded config: started ${payload.started?.length || 0}, failed ${payload.failed?.length || 0}`);
-    await refreshInstances();
+    await store.refresh('instances');
   } catch (error) {
     toast(`Load config failed: ${error.message}`);
   }
@@ -1792,13 +1687,18 @@ if ($("instanceTestDialog")) {
 syncGlobalApiTokenInput();
 void refreshGlobalApiAccess();
 initInstancesEventDelegation();
-refreshInstances();
+store.subscribe('instances', renderInstanceData);
+store.subscribe('hostStats', (data) => { renderHostStats(data); renderInstanceStatsFooter(); });
+store.subscribe('gpuHardware', renderGpuSelect);
+store.addEventListener('hostStatsError', () => {
+  const panel = $("hostStatsPanel");
+  if (panel && panel.querySelector(".host-stats-loading")) {
+    panel.innerHTML = `<span class="host-stats-loading">Host stats unavailable</span>`;
+  }
+});
+store.startPolling();
 refreshConfigLibrary();
 applyRestartPolicyUi();
-refreshHostStats();
-setInterval(refreshInstances, 2000);
-setInterval(refreshHostStats, 3000);
-setInterval(() => loadSystemGpus("launchGpus"), 15000);
 
 // ────────────────────────────────────────────────────────────────────────────
 // Page tab switcher
