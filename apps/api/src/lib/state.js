@@ -91,11 +91,36 @@ export function writeSharedConfig(s) {
   }
 }
 
-export function saveState(s) {
+// Coalesce saveState calls so that bursts of mutations within a single tick
+// (e.g. many small updates from one handler, or several handlers resuming at
+// the same await boundary) result in one actual disk write instead of N.
+let saveScheduled = false;
+
+function writeStateNow(s) {
   const tmp = stateFile + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
   fs.renameSync(tmp, stateFile);
   writeSharedConfig(s);
+}
+
+export function saveState(s) {
+  if (saveScheduled) return;
+  saveScheduled = true;
+  setImmediate(() => {
+    saveScheduled = false;
+    try {
+      writeStateNow(s);
+    } catch (err) {
+      console.error("[state] saveState failed:", err.message || err);
+    }
+  });
+}
+
+// Force an immediate synchronous flush — used at shutdown or where the caller
+// must observe the write before returning (e.g. tests).
+export function saveStateSync(s) {
+  saveScheduled = false;
+  writeStateNow(s);
 }
 
 // Singleton — consumers import and mutate properties in-place.

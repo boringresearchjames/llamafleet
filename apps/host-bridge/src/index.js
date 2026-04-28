@@ -1,5 +1,6 @@
 import express from "express";
 import { execFile, spawn } from "child_process";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -38,12 +39,23 @@ function isValidInstanceId(value) {
   return typeof value === "string" && /^[a-zA-Z0-9_-]+$/.test(value);
 }
 
+function timingSafeStringEq(a, b) {
+  const ab = Buffer.from(String(a || ""));
+  const bb = Buffer.from(String(b || ""));
+  if (ab.length !== bb.length) {
+    // Compare against self to keep timing constant on length mismatch.
+    crypto.timingSafeEqual(ab, ab);
+    return false;
+  }
+  return crypto.timingSafeEqual(ab, bb);
+}
+
 function auth(req, res, next) {
   if (!bridgeAuthEnabled) {
     return next();
   }
   const token = req.header("x-bridge-token") || "";
-  if (token !== bridgeToken) {
+  if (!timingSafeStringEq(token, bridgeToken)) {
     return res.status(401).json({ error: "Unauthorized bridge token" });
   }
   return next();

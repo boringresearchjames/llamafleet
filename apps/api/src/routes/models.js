@@ -6,6 +6,11 @@ import { proxyToInstance } from "../lib/proxy.js";
 
 const router = express.Router();
 
+// Multimodal chat payloads embed base64 images/audio and routinely exceed the
+// global 1mb default. 50mb covers up to ~37mb of decoded image data per
+// request, which is more than any sane vision model accepts in one turn.
+const largeJson = express.json({ limit: "50mb" });
+
 router.get("/models", (_req, res) => {
   const running = state.instances.filter((x) => x.state !== "stopped" && !x.drain);
 
@@ -66,8 +71,7 @@ router.get("/models", (_req, res) => {
   res.json({ object: "list", data });
 });
 
-router.post("/chat/completions", async (req, res) => {
-  console.log(`[http] POST /v1/chat/completions body=${JSON.stringify(req.body)}`);
+router.post("/chat/completions", largeJson, async (req, res) => {
   const modelName = String(req.body?.model || "").trim();
   const resolved = resolveInstanceByModelName(modelName);
   if (resolved.error) {
@@ -86,8 +90,7 @@ router.post("/chat/completions", async (req, res) => {
   return proxyToInstance(resolved.instance, req, res, `${instanceBaseUrl(resolved.instance)}/v1/chat/completions${query}`);
 });
 
-router.post("/completions", async (req, res) => {
-  console.log(`[http] POST /v1/completions body=${JSON.stringify(req.body)}`);
+router.post("/completions", largeJson, async (req, res) => {
   const modelName = String(req.body?.model || "").trim();
   const resolved = resolveInstanceByModelName(modelName);
   if (resolved.error) {
@@ -106,7 +109,7 @@ router.post("/completions", async (req, res) => {
   return proxyToInstance(resolved.instance, req, res, `${instanceBaseUrl(resolved.instance)}/v1/completions${query}`);
 });
 
-router.all("/instances/:id/proxy/*", async (req, res) => {
+router.all("/instances/:id/proxy/*", largeJson, async (req, res) => {
   const instance = state.instances.find((x) => x.id === req.params.id);
   if (!instance) {
     return res.status(404).json({ error: { message: "instance not found", type: "invalid_request_error", param: "id", code: "instance_not_found" } });

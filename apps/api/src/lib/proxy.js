@@ -101,6 +101,15 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
   req.on("aborted", () => { if (!res.writableEnded) abortController.abort(); });
   res.on("close", () => { if (!res.writableEnded) abortController.abort(); });
 
+  // Headers-received timeout. We only abort if upstream hasn't even started
+  // responding within this window — once a stream is flowing (chat completions
+  // can legitimately take minutes), we let it run as long as the client is
+  // still connected. Override per-deployment with PROXY_HEADERS_TIMEOUT_MS.
+  const headersTimeoutMs = Number(process.env.PROXY_HEADERS_TIMEOUT_MS || 60_000);
+  const headersTimer = setTimeout(() => {
+    if (!res.headersSent) abortController.abort();
+  }, headersTimeoutMs);
+
   let finalized = false;
   const finalize = () => {
     if (finalized) return;
@@ -121,6 +130,7 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
       duplex: bodyAllowed && !isJsonRequest ? "half" : undefined,
       signal: abortController.signal
     });
+    clearTimeout(headersTimer);
 
     res.status(upstream.status);
     copyProxyResponseHeaders(upstream.headers, res);
@@ -164,6 +174,7 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
     res.on("close", finalize);
     stream.pipe(res);
   } catch (error) {
+    clearTimeout(headersTimer);
     finalize();
     if (abortController.signal.aborted) return;
     res.status(502).json({

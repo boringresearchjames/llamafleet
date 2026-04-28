@@ -7,6 +7,7 @@ import { instanceBaseUrl } from "./lib/urls.js";
 import { now } from "./lib/utils.js";
 import { audit } from "./lib/audit.js";
 import { restorePartialDownloads } from "./lib/hub.js";
+import { cleanupSessions } from "./lib/auth.js";
 
 import healthRouter from "./routes/health.js";
 import metricsRouter from "./routes/metrics.js";
@@ -24,7 +25,15 @@ import systemRouter from "./routes/system.js";
 const corsHeaders = "Authorization, Content-Type, X-Bridge-Token, X-HF-Token";
 
 const app = express();
-app.use(express.json({ limit: "50mb" }));
+// Body parsing is split: most endpoints use a small 1mb limit. Routes that
+// proxy multimodal payloads (base64 images/audio inside chat completions)
+// install their own larger parser — see routes/models.js.
+const smallJson = express.json({ limit: "1mb" });
+const LARGE_BODY_PATHS = /^\/v1\/(chat\/completions|completions|instances\/[^/]+\/proxy(\/|$))/;
+app.use((req, res, next) => {
+  if (LARGE_BODY_PATHS.test(req.path)) return next();
+  return smallJson(req, res, next);
+});
 
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", corsOrigin);
@@ -117,6 +126,17 @@ async function pollInstanceHealth() {
 }
 
 setInterval(() => { void pollInstanceHealth(); }, HEALTH_POLL_INTERVAL_MS);
+
+// Sweep expired auth sessions hourly. Without this, sessions accumulated up to
+// the slice(-1000) cap and stayed valid until pushed off by new logins.
+const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+setInterval(() => {
+  const before = state.sessions.length;
+  cleanupSessions();
+  if (state.sessions.length !== before) saveState(state);
+}, SESSION_CLEANUP_INTERVAL_MS);
+// Run once at startup so stale sessions from previous runs are dropped.
+cleanupSessions();
 
 restorePartialDownloads();
 
