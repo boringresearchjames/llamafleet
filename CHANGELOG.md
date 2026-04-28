@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.4.0] — 2026-04-27
+
+### Added
+- **Model Browser** — browse and download GGUF models directly from Hugging Face: search, quant guide, resumable downloads with pause/resume/discard, favorites pinned for one-click launch, and local library scan.
+- **Host stats bar** — CPU, RAM, and per-core utilisation bars in the instances table footer with compact utilisation squares and rounded corners.
+- **Per-instance `headersTimeoutMs`** — configurable headers timeout exposed in the launch form Advanced section; prevents proxy stalls on slow inference starts.
+- **Model dropdown source groups** — models grouped by origin (Local / Ollama / HuggingFace / Unsloth) with file sizes shown alongside each entry.
+- **Unload All button** (⏏) — stops all running instances while keeping the service up; one-click fleet drain from the dashboard.
+- **Footer** with llama emoji.
+- **Vitest integration test suite** — high-level API tests covering instance lifecycle and routing.
+- **`Why LlamaFleet?` README section** — comparison table against Ollama and LM Studio.
+- **SECURITY.md** — deployment guidance for network hardening, token generation, and reverse-proxy setup.
+
+### Changed
+- Full frontend refactor into ES modules and Web Components (Phases 3–5): `lf-state-chip`, `lf-activity-chip`, `lf-toast`, `lf-host-stats`, `lf-routing-map`.
+- `apps/api/src/index.js` split into `lib/` + `routes/` modules for maintainability.
+- CPU-only instances now display a **CPU** label instead of GPU in the routing map and pool.
+- Removed `--flash-attn` and `--mlock` from default server args (incompatible with V100 and pre-Ampere hardware).
+- Dashboard section renamed to "In App Screenshots" with full-page screenshots added to README.
+
+### Fixed
+- 6 security audit findings: timing side-channels, session handling, proxy timeout, and body-size limits.
+- XSS in Model Hub `onclick` handlers; state file writes are now atomic.
+- Proxy headers timeout now emits a structured log and returns a proper 504 instead of dropping the connection; stale-ref finalise race fixed.
+- Download reliability: cancel, pause/resume via `Promise.race` abort, flush on cancel, stale paused/error job eviction on resume, duplicate row prevention.
+- LFS file size display, download rate, and ETA shown correctly.
+- `display:contents` on Web Component wrappers restores CSS grid layout.
+- `signal.aborted` checked after read loop before rename to prevent false completion on pause.
+- `inflightRequests` counter preserved through bridge polling cycles (previously reset to 0 on every poll).
+- Single-quote escaping in `onclick` handlers throughout Model Hub.
+
+---
+
 ## [0.3.0] — 2026-04-26
 
 ### Added
