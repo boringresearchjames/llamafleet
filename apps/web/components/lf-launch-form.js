@@ -362,6 +362,11 @@ class LfLaunchForm extends HTMLElement {
             Model TTL (sec)
             <input id="launchModelTtl" type="number" min="1" placeholder="optional" class="launch-input" />
           </label>
+          <label class="launch-field">
+            Response Timeout (ms)
+            <input id="launchHeadersTimeout" type="number" min="1000" step="1000" placeholder="default 60000" class="launch-input" />
+            <small class="launch-field-help">Max ms to wait for first response token. Increase for large/slow models.</small>
+          </label>
           <label class="launch-field launch-field-span-3">
             Server Args
             <input id="launchServerArgs" type="text" value="--flash-attn on -b 2048 -ub 1024 --mlock -ctk q8_0 -ctv q8_0 -ngl 999" placeholder="e.g. --flash-attn on -b 2048" class="launch-input" />
@@ -479,6 +484,7 @@ class LfLaunchForm extends HTMLElement {
           queueLimit: Number($("launchQueueLimit").value || 64),
           modelParallel: Number($("launchModelParallel").value || 1),
           modelTtlSeconds: parseOptionalPositiveIntegerInput("launchModelTtl"),
+          headersTimeoutMs: parseOptionalPositiveIntegerInput("launchHeadersTimeout"),
           restartPolicy: {
             mode: String($("launchRestartMode").value || "never"),
             maxRetries: Number($("launchRestartRetries").value || 2),
@@ -546,6 +552,8 @@ class LfLaunchForm extends HTMLElement {
     $("launchInflight").value = String(inst.maxInflightRequests || 4);
     $("launchQueueLimit").value = String(inst.queueLimit || 64);
     $("launchModelParallel").value = String(inst.modelParallel || 1);
+    if (inst.headersTimeoutMs) $("launchHeadersTimeout").value = String(inst.headersTimeoutMs);
+    else $("launchHeadersTimeout").value = "";
 
     const rp = inst.restartPolicy || { mode: "never" };
     $("launchRestartMode").value = rp.mode || "never";

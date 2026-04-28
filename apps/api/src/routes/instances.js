@@ -107,6 +107,7 @@ router.post("/instances/start", async (req, res) => {
   const queueLimit = parsePositiveInteger(req.body?.queueLimit, 64, 1, 100000);
   const modelTtlSeconds = parseOptionalPositiveInteger(req.body?.modelTtlSeconds);
   const modelParallel = parseOptionalPositiveInteger(req.body?.modelParallel);
+  const headersTimeoutMs = parseOptionalPositiveInteger(req.body?.headersTimeoutMs);
   const restartPolicy = parseRestartPolicy(req.body?.restartPolicy);
 
   if (!name) {
@@ -209,6 +210,7 @@ router.post("/instances/start", async (req, res) => {
     queueLimit,
     modelTtlSeconds,
     modelParallel,
+    headersTimeoutMs,
     restartPolicy,
     inflightRequests: 0,
     queueDepth: 0,

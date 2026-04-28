@@ -104,8 +104,9 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
   // Headers-received timeout. We only abort if upstream hasn't even started
   // responding within this window — once a stream is flowing (chat completions
   // can legitimately take minutes), we let it run as long as the client is
-  // still connected. Override per-deployment with PROXY_HEADERS_TIMEOUT_MS.
-  const headersTimeoutMs = Number(process.env.PROXY_HEADERS_TIMEOUT_MS || 60_000);
+  // still connected. Override per-instance with headersTimeoutMs, or globally
+  // with PROXY_HEADERS_TIMEOUT_MS env var.
+  const headersTimeoutMs = Number(instance.headersTimeoutMs || process.env.PROXY_HEADERS_TIMEOUT_MS || 60_000);
   let headersTimedOut = false;
   const headersTimer = setTimeout(() => {
     if (!res.headersSent) {

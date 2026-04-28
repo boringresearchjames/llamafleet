@@ -25,6 +25,7 @@ export function currentInstanceTemplates() {
     queueLimit: parsePositiveInteger(inst.queueLimit, 64, 1, 100000),
     modelTtlSeconds: parseOptionalPositiveInteger(inst.modelTtlSeconds),
     modelParallel: parseOptionalPositiveInteger(inst.modelParallel),
+    headersTimeoutMs: parseOptionalPositiveInteger(inst.headersTimeoutMs),
     restartPolicy: parseRestartPolicy(inst.restartPolicy)
   }));
 }
@@ -50,8 +51,7 @@ export function sanitizeInstanceConfigPayload(raw = {}) {
       maxInflightRequests: parsePositiveInteger(inst?.maxInflightRequests, 4, 1, 1024),
       queueLimit: parsePositiveInteger(inst?.queueLimit, 64, 1, 100000),
       modelTtlSeconds: parseOptionalPositiveInteger(inst?.modelTtlSeconds),
-      modelParallel: parseOptionalPositiveInteger(inst?.modelParallel),
-      restartPolicy: parseRestartPolicy(inst?.restartPolicy)
+      modelParallel: parseOptionalPositiveInteger(inst?.modelParallel),      headersTimeoutMs: parseOptionalPositiveInteger(inst.headersTimeoutMs),      restartPolicy: parseRestartPolicy(inst?.restartPolicy)
     };
   }).filter(Boolean);
 
