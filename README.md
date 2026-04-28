@@ -52,11 +52,24 @@ All three tools are built on top of `llama.cpp`, so they share the same hardware
 
 ## Dashboard
 
-<p align="center">
-  <a href="docs/screenshot-dashboard.png"><img src="docs/screenshot-dashboard.png" width="48%" alt="LlamaFleet dashboard" /></a>
-  &nbsp;
-  <a href="docs/screenshot-models.png"><img src="docs/screenshot-models.png" width="48%" alt="LlamaFleet models hub" /></a>
-</p>
+<table align="center" width="100%"><tr>
+<td width="50%" align="center" valign="top">
+
+**Instances &amp; Routing**<br/>
+Launch form, running instances with GPU stats, log viewer, and the routing map showing which instances share a round-robin pool.
+
+<a href="docs/screenshot-dashboard.png"><img src="docs/screenshot-dashboard.png" width="100%" alt="LlamaFleet dashboard — instances and routing" /></a>
+
+</td>
+<td width="50%" align="center" valign="top">
+
+**Model Hub**<br/>
+Browse and download GGUF models directly from HuggingFace. Tracks active downloads with resume/discard controls and pins favorites for one-click launch.
+
+<a href="docs/screenshot-models.png"><img src="docs/screenshot-models.png" width="100%" alt="LlamaFleet model hub" /></a>
+
+</td>
+</tr></table>
 
 ---
 
