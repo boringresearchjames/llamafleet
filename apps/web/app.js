@@ -1,5 +1,8 @@
 import { settings, saveToken, api } from './api.js';
 import { store } from './store.js';
+import './components/lf-state-chip.js';
+import './components/lf-activity-chip.js';
+import './components/lf-toast.js';
 
 function syncGlobalApiTokenInput() {
   const input = $("globalApiToken");
@@ -15,7 +18,7 @@ let instanceTestTargetId = null;
 const $ = (id) => document.getElementById(id);
 
 function toast(msg) {
-  $("toast").textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  $("toast").notify(`[${new Date().toLocaleTimeString()}] ${msg}`);
 }
 
 function setOperationPending(info) {
@@ -95,7 +98,7 @@ function setOperationPending(info) {
 function stateChipHtml(state) {
   const normalized = String(state || "unknown").toLowerCase();
   const safeText = escapeHtml(state || "unknown");
-  return `<span class="state-chip state-${normalized}"><span class="state-dot"></span>${safeText}</span>`;
+  return `<lf-state-chip state="${normalized}">${safeText}</lf-state-chip>`;
 }
 
 function formatCompactCount(value) {
@@ -105,34 +108,18 @@ function formatCompactCount(value) {
 }
 
 function activityChipHtml(inst) {
-  const inflight = Math.max(0, Number(inst?.inflightRequests || 0));
+  const inflight    = Math.max(0, Number(inst?.inflightRequests || 0));
   const maxInflight = Math.max(1, Number(inst?.maxInflightRequests || 1));
-  const queueDepth = Math.max(0, Number(inst?.queueDepth || 0));
+  const queueDepth  = Math.max(0, Number(inst?.queueDepth || 0));
   const totalCompletionTokens = Math.max(0, Number(inst?.totalCompletionTokens || 0));
   const totalTokens = Math.max(0, Number(inst?.totalTokens || 0));
-  const lastActivityMs = Date.parse(inst?.lastActivityAt || "");
-  const isProcessing = inflight > 0;
-  const recentlyActive = !isProcessing
-    && Number.isFinite(lastActivityMs)
-    && (Date.now() - lastActivityMs) <= 45000;
-  const statusText = isProcessing ? "Processing" : (recentlyActive ? "Active" : "Idle");
-  const statusClass = isProcessing ? "processing" : (recentlyActive ? "active" : "idle");
-  const tokenCount = totalCompletionTokens > 0 ? totalCompletionTokens : totalTokens;
-  const tokenText = tokenCount > 0 ? `tok:${formatCompactCount(tokenCount)}` : "";
-  const activityAgoSec = recentlyActive
-    ? Math.max(1, Math.round((Date.now() - lastActivityMs) / 1000))
-    : null;
-
-  return `
-    <div class="activity-chip ${statusClass}">
-      <span class="activity-dot"></span>
-      <span>${statusText}</span>
-      <span class="activity-count">${inflight}/${maxInflight}</span>
-      ${queueDepth > 0 ? `<span class="activity-queue">q:${queueDepth}</span>` : ""}
-      ${tokenText ? `<span class="activity-token">${tokenText}</span>` : ""}
-      ${activityAgoSec !== null ? `<span class="activity-fresh">${activityAgoSec}s</span>` : ""}
-    </div>
-  `;
+  const tokens = totalCompletionTokens > 0 ? totalCompletionTokens : totalTokens;
+  return `<lf-activity-chip
+    inflight="${inflight}"
+    max-inflight="${maxInflight}"
+    queue="${queueDepth}"
+    tokens="${tokens}"
+    last-active="${escapeAttr(inst?.lastActivityAt || '')}"></lf-activity-chip>`;
 }
 
 function setGlobalApiStatusLabel(text) {
