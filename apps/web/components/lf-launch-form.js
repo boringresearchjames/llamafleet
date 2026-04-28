@@ -137,27 +137,44 @@ export async function loadModelList(selectElementId) {
     return ` — ${(bytes / 1e3).toFixed(0)} KB`;
   }
 
+  const SOURCE_LABELS = {
+    ollama: "Ollama",
+    huggingface: "Hugging Face",
+    unsloth: "Unsloth Studio",
+  };
+
   function applyModels(models, sourceLabel) {
     select.innerHTML = '<option value="">-- Select model --</option>';
-    models.forEach((model) => {
-      const option = document.createElement("option");
-      option.value = model.id;
-      // Show just the filename (strip directory path) + size
+
+    // Bucket models by their source tag (or "local" if none)
+    const groups = new Map();
+    for (const model of models) {
       const raw = model.name || model.id;
-      // Extract tag prefix like [ollama] if present
-      const tagMatch = raw.match(/^(\[[^\]]+\]\s*)(.+)$/);
-      let label;
-      if (tagMatch) {
-        const tag = tagMatch[1];
-        const filePart = tagMatch[2].split(/[\/\\]/).pop();
-        label = tag + filePart;
-      } else {
-        label = raw.split(/[\/\\]/).pop();
+      const tagMatch = raw.match(/^\[([^\]]+)\]\s*(.+)$/);
+      const tag = tagMatch ? tagMatch[1].toLowerCase() : "local";
+      const filePart = (tagMatch ? tagMatch[2] : raw).split(/[\/\\]/).pop();
+      if (!groups.has(tag)) groups.set(tag, []);
+      groups.get(tag).push({ model, filePart });
+    }
+
+    // Render: "local" first, then alphabetically by tag
+    const order = ["local", ...([...groups.keys()].filter(k => k !== "local").sort())];
+    for (const tag of order) {
+      if (!groups.has(tag)) continue;
+      const items = groups.get(tag);
+      const groupLabel = SOURCE_LABELS[tag] ?? (tag === "local" ? "Local Models" : tag);
+      const group = document.createElement("optgroup");
+      group.label = groupLabel;
+      for (const { model, filePart } of items) {
+        const option = document.createElement("option");
+        option.value = model.id;
+        option.textContent = filePart + fmtSize(model.size);
+        option.title = model.id;
+        group.appendChild(option);
       }
-      option.textContent = label + fmtSize(model.size);
-      option.title = model.id; // full path on hover
-      select.appendChild(option);
-    });
+      select.appendChild(group);
+    }
+
     if (currentValue) select.value = currentValue;
     toast(`Loaded ${models.length} models (${sourceLabel})`);
   }

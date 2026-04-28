@@ -257,7 +257,7 @@ openssl rand -hex 32
 
 - **Single-host only** — LlamaFleet manages instances on one machine. A bridge-router component exists for multi-host setups but multi-host is not the primary target.
 - **`llama-server` binary required** — LlamaFleet does not bundle or build it. Get a binary from the [llama.cpp releases page](https://github.com/ggerganov/llama.cpp/releases).
-- **No model download management** — Models must be present on the host filesystem.
+- **HF Hub browser** — Download models directly from Hugging Face via the Models tab. Local GGUF files are also auto-scanned from `~/.lmstudio/models`, `~/.ollama/models`, `~/.cache/huggingface/hub`, and `~/unsloth_studio` (or a custom `MODELS_DIR`).
 - **No per-instance auth** — Auth is enforced at the proxy layer via the global `API_AUTH_TOKEN`. There is no per-instance key.
 - **No speculative decoding or prefix caching** — Pass the relevant `llama-server` flags via `runtimeArgs` if the binary supports them.
 
