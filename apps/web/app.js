@@ -3,6 +3,8 @@ import { store } from './store.js';
 import './components/lf-state-chip.js';
 import './components/lf-activity-chip.js';
 import './components/lf-toast.js';
+import './components/lf-host-stats.js';
+import './components/lf-routing-map.js';
 
 function syncGlobalApiTokenInput() {
   const input = $("globalApiToken");
@@ -1045,43 +1047,6 @@ function resolveDisplayRouteName(inst, allInstances) {
   return siblings.length > 0 ? `${routeName}-1` : routeName;
 }
 
-function renderHostStats(data) {
-  const panel = $("hostStatsPanel");
-  if (!panel) return;
-
-  const memPct = data.mem_total_mib > 0
-    ? Math.round((data.mem_used_mib / data.mem_total_mib) * 100)
-    : 0;
-  const memUsedGib  = (data.mem_used_mib  / 1024).toFixed(1);
-  const memTotalGib = (data.mem_total_mib / 1024).toFixed(1);
-  const memColor = memPct >= 90 ? "var(--danger)" : memPct >= 70 ? "#ffbe5c" : "var(--accent-2)";
-
-  const cpuPct = data.cpu_utilization_percent ?? 0;
-  const cpuColor = cpuPct >= 90 ? "var(--danger)" : cpuPct >= 60 ? "#ffbe5c" : "var(--accent)";
-  const load1 = data.loadavg ? data.loadavg[0].toFixed(2) : "—";
-
-  const coreSquares = Array.isArray(data.cpu_per_core) && data.cpu_per_core.length > 0
-    ? data.cpu_per_core.map((pct) => {
-        const c = pct >= 80 ? "var(--danger)" : pct >= 40 ? "#ffbe5c" : pct >= 10 ? "var(--accent)" : "rgba(159,176,216,0.18)";
-        return `<span class="hs-core-sq" style="background:${c}" title="${pct}%"></span>`;
-      }).join("")
-    : "";
-
-  panel.innerHTML = `
-    <div class="host-strip-stat">
-      <span class="hs-label">RAM</span>
-      <div class="hs-bar-wrap"><div class="hs-bar-fill" style="width:${memPct}%;background:${memColor}"></div></div>
-      <span class="hs-value">${memUsedGib}/${memTotalGib}&thinsp;GiB</span>
-    </div>
-    <div class="host-strip-stat">
-      <span class="hs-label">CPU</span>
-      <div class="hs-bar-wrap"><div class="hs-bar-fill" style="width:${cpuPct}%;background:${cpuColor}"></div></div>
-      <span class="hs-value">${cpuPct}%</span>
-      <span class="hs-muted">load&thinsp;${load1}</span>
-    </div>
-    ${coreSquares ? `<div class="hs-cores">${coreSquares}</div>` : ""}`;
-}
-
 function renderInstanceStatsFooter() {
   const tfoot = $("instanceStatsFooter");
   if (!tfoot) return;
@@ -1213,7 +1178,6 @@ function renderInstanceData(data) {
 
     renderInstanceStatsFooter();
     applyGpuAvailability();
-    renderRoutingMap();
 }
 
 // Single delegated handler for the instances table. Attached once at startup
@@ -1274,96 +1238,6 @@ function initInstancesEventDelegation() {
       const btn = e.target.closest("button[data-route-copy]");
       if (btn) copy(btn.getAttribute("data-route-copy") || "");
     });
-  }
-}
-
-function renderRoutingMap() {
-  const container = $("routingMap");
-  if (!container) return;
-
-  const active = (store.get('instances') || []).filter(x => x.state !== "stopped");
-  if (active.length === 0) {
-    container.innerHTML = `<div class="routing-empty">No active instances — start an instance to see the routing map.</div>`;
-    return;
-  }
-
-  // Group by base stem of modelRouteName
-  const groups = new Map(); // baseStem -> [{ inst, routeName }]
-  for (const inst of active) {
-    const routeName = inst.modelRouteName || "";
-    if (!routeName) continue;
-    const baseStem = routeName.replace(/-\d+$/, "");
-    if (!groups.has(baseStem)) groups.set(baseStem, []);
-    groups.get(baseStem).push({ inst, routeName });
-  }
-
-  if (groups.size === 0) {
-    container.innerHTML = `<div class="routing-empty">No route names configured — instances need a modelRouteName.</div>`;
-    return;
-  }
-
-  const html = [];
-  for (const [baseStem, members] of groups) {
-    html.push(renderRouteGroupHtml(baseStem, members));
-  }
-  container.innerHTML = html.join("");
-  // Click handling is delegated once on the container (initInstancesEventDelegation).
-}
-
-function renderRouteGroupHtml(baseStem, members) {
-  const isPool = members.length > 1;
-
-  if (isPool) {
-    const instCards = members.map(({ inst, routeName }) => {
-      const gpus = Array.isArray(inst.gpus) ? inst.gpus.join(", ") : "-";
-      const state = String(inst.state || "unknown").toLowerCase();
-      const isBase = routeName === baseStem;
-      const pinnedName = isBase ? `${baseStem}-1` : routeName;
-      const pinSection = `<div class="route-inst-pin"><code class="route-inst-pin-name" title="Pin to this GPU: ${escapeHtml(pinnedName)}">${escapeHtml(pinnedName)}</code><button class="icon-btn route-copy-mini" data-route-copy="${escapeHtml(pinnedName)}" title="Copy pinned name to always target this GPU">&#x2398;</button></div>`;
-      return `<div class="route-inst-card">
-          <div class="route-inst-card-top">
-            <span class="state-dot state-${state}"></span>
-            <span class="route-inst-gpu-label">GPU ${escapeHtml(gpus)}</span>
-          </div>
-          <div class="route-inst-profile-name">${escapeHtml(inst.profileName || inst.id.slice(0, 8))}</div>
-          ${pinSection}
-        </div>`;
-    }).join("");
-
-    return `<div class="route-group route-group-pool">
-        <div class="route-group-header">
-          <span class="route-group-icon route-icon-pool" title="Round-robin pool: each request cycles to the next available instance">&#x21C4;</span>
-          <span class="route-group-name">${escapeHtml(baseStem)}</span>
-          <span class="route-group-badge">round-robin &middot; ${members.length} instances</span>
-          <button class="route-copy-btn" data-route-copy="${escapeHtml(baseStem)}" title="Copy model name">Copy</button>
-        </div>
-        <div class="route-group-tip">
-          &#x1F4A1; Send <code>${escapeHtml(baseStem)}</code> as the model name to automatically spread load across all ${members.length} GPUs.
-          To always target a specific GPU, copy the pinned name shown on each card below.
-        </div>
-        <div class="route-inst-row">${instCards}</div>
-      </div>`;
-  } else {
-    const { inst, routeName } = members[0];
-    const gpus = Array.isArray(inst.gpus) ? inst.gpus.join(", ") : "-";
-    const state = String(inst.state || "unknown").toLowerCase();
-    return `<div class="route-group route-group-solo">
-        <div class="route-group-header">
-          <span class="route-group-icon route-icon-solo" title="Direct routing: all requests go to this single instance">&#x2192;</span>
-          <span class="route-group-name">${escapeHtml(routeName)}</span>
-          <span class="route-group-badge route-group-badge-solo">direct &middot; GPU ${escapeHtml(gpus)}</span>
-          <button class="route-copy-btn" data-route-copy="${escapeHtml(routeName)}" title="Copy model name">Copy</button>
-        </div>
-        <div class="route-inst-row">
-          <div class="route-inst-card">
-            <div class="route-inst-card-top">
-              <span class="state-dot state-${state}"></span>
-              <span class="route-inst-gpu-label">GPU ${escapeHtml(gpus)}</span>
-            </div>
-            <div class="route-inst-profile-name">${escapeHtml(inst.profileName || inst.id.slice(0, 8))}</div>
-          </div>
-        </div>
-      </div>`;
   }
 }
 
@@ -1675,14 +1549,8 @@ syncGlobalApiTokenInput();
 void refreshGlobalApiAccess();
 initInstancesEventDelegation();
 store.subscribe('instances', renderInstanceData);
-store.subscribe('hostStats', (data) => { renderHostStats(data); renderInstanceStatsFooter(); });
+store.subscribe('hostStats', () => renderInstanceStatsFooter());
 store.subscribe('gpuHardware', renderGpuSelect);
-store.addEventListener('hostStatsError', () => {
-  const panel = $("hostStatsPanel");
-  if (panel && panel.querySelector(".host-stats-loading")) {
-    panel.innerHTML = `<span class="host-stats-loading">Host stats unavailable</span>`;
-  }
-});
 store.startPolling();
 refreshConfigLibrary();
 applyRestartPolicyUi();
