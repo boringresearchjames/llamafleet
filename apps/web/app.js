@@ -1329,50 +1329,69 @@ async function refreshInstances() {
     renderInstanceStatsFooter();
     applyGpuAvailability();
     renderRoutingMap();
-
-    tbody.querySelectorAll("button[data-action]").forEach((btn) => {
-      btn.onclick = async () => {
-        const id = btn.getAttribute("data-id");
-        const action = btn.getAttribute("data-action");
-        try {
-          if (action === "wake") {
-            await api(`/v1/instances/${id}/restart`, { method: "POST" });
-          } else if (action === "drain") {
-            const enable = btn.getAttribute("data-enabled") === "true";
-            await api(`/v1/instances/${id}/drain`, {
-              method: "POST",
-              body: JSON.stringify({ enabled: enable })
-            });
-          } else if (action === "delete") {
-            const confirmed = window.confirm(`Remove instance ${id} from LlamaFleet?`);
-            if (!confirmed) return;
-            await api(`/v1/instances/${id}`, {
-              method: "DELETE"
-            });
-          } else if (action === "copy-base" || action === "copy-model") {
-            copy(btn.getAttribute("data-copy") || "");
-            return;
-          } else if (action === "test") {
-            openInstanceTestDialog(id);
-            return;
-          } else if (action === "speed-test") {
-            openInstanceTestDialog(id);
-            void runInstanceSpeedTest();
-            return;
-          } else if (action === "clone") {
-            cloneInstanceSetup(id);
-            return;
-          }
-
-          toast(`Action ${action} applied on ${id}`);
-          await refreshInstances();
-        } catch (error) {
-          toast(`Action failed: ${error.message}`);
-        }
-      };
-    });
   } catch (error) {
     toast(`Instances refresh failed: ${error.message}`);
+  }
+}
+
+// Single delegated handler for the instances table. Attached once at startup
+// (see initInstancesEventDelegation) so re-renders don't re-bind N handlers
+// every 2 seconds.
+async function handleInstanceAction(btn) {
+  const id = btn.getAttribute("data-id");
+  const action = btn.getAttribute("data-action");
+  try {
+    if (action === "wake") {
+      await api(`/v1/instances/${id}/restart`, { method: "POST" });
+    } else if (action === "drain") {
+      const enable = btn.getAttribute("data-enabled") === "true";
+      await api(`/v1/instances/${id}/drain`, {
+        method: "POST",
+        body: JSON.stringify({ enabled: enable })
+      });
+    } else if (action === "delete") {
+      const confirmed = window.confirm(`Remove instance ${id} from LlamaFleet?`);
+      if (!confirmed) return;
+      await api(`/v1/instances/${id}`, { method: "DELETE" });
+    } else if (action === "copy-base" || action === "copy-model") {
+      copy(btn.getAttribute("data-copy") || "");
+      return;
+    } else if (action === "test") {
+      openInstanceTestDialog(id);
+      return;
+    } else if (action === "speed-test") {
+      openInstanceTestDialog(id);
+      void runInstanceSpeedTest();
+      return;
+    } else if (action === "clone") {
+      cloneInstanceSetup(id);
+      return;
+    }
+
+    toast(`Action ${action} applied on ${id}`);
+    await refreshInstances();
+  } catch (error) {
+    toast(`Action failed: ${error.message}`);
+  }
+}
+
+function initInstancesEventDelegation() {
+  const tbody = $("instanceRows");
+  if (tbody && !tbody.dataset.delegated) {
+    tbody.dataset.delegated = "1";
+    tbody.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-action]");
+      if (btn) void handleInstanceAction(btn);
+    });
+  }
+
+  const routingMap = $("routingMap");
+  if (routingMap && !routingMap.dataset.delegated) {
+    routingMap.dataset.delegated = "1";
+    routingMap.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-route-copy]");
+      if (btn) copy(btn.getAttribute("data-route-copy") || "");
+    });
   }
 }
 
@@ -1406,9 +1425,7 @@ function renderRoutingMap() {
     html.push(renderRouteGroupHtml(baseStem, members));
   }
   container.innerHTML = html.join("");
-  container.querySelectorAll("button[data-route-copy]").forEach(btn => {
-    btn.onclick = () => copy(btn.getAttribute("data-route-copy") || "");
-  });
+  // Click handling is delegated once on the container (initInstancesEventDelegation).
 }
 
 function renderRouteGroupHtml(baseStem, members) {
@@ -1774,6 +1791,7 @@ if ($("instanceTestDialog")) {
 
 syncGlobalApiTokenInput();
 void refreshGlobalApiAccess();
+initInstancesEventDelegation();
 refreshInstances();
 refreshConfigLibrary();
 applyRestartPolicyUi();
@@ -2098,7 +2116,7 @@ async function searchHub(q, author, tags) {
     const res = await api(`/v1/hub/search?${params}`, { headers: hfHeaders() });
     renderHubResults(res.data || []);
   } catch (err) {
-    list.innerHTML = `<span class="hub-empty" style="color:var(--danger)">Error: ${err.message}</span>`;
+    list.innerHTML = `<span class="hub-empty" style="color:var(--danger)">Error: ${escapeHtml(err.message)}</span>`;
   }
 }
 
@@ -2117,7 +2135,7 @@ async function loadCollection(source) {
     if (input) input.value = "";
     renderHubResults(res.data || []);
   } catch (err) {
-    list.innerHTML = `<span class="hub-empty" style="color:var(--danger)">Error: ${err.message}</span>`;
+    list.innerHTML = `<span class="hub-empty" style="color:var(--danger)">Error: ${escapeHtml(err.message)}</span>`;
   }
 }
 
@@ -2174,7 +2192,7 @@ async function toggleRepoFiles(repoId) {
     hubRepoFilesCache[repoId] = res.data || [];
     renderRepoFiles(repoId, res.data || []);
   } catch (err) {
-    if (tbody) tbody.innerHTML = `<tr><td colspan="4"><span class="hub-empty" style="color:var(--danger)">Error: ${err.message}</span></td></tr>`;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="4"><span class="hub-empty" style="color:var(--danger)">Error: ${escapeHtml(err.message)}</span></td></tr>`;
   }
 }
 
