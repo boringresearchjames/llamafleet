@@ -72,6 +72,26 @@ $("globalApiToken").addEventListener("keydown", (event) => {
   if (event.key === "Enter") { event.preventDefault(); void $("saveGlobalApi").click(); }
 });
 
+$("unloadAll").onclick = async () => {
+  const confirmed = window.confirm("Stop all running instances? The service stays up and config is preserved.");
+  if (!confirmed) return;
+  const closePoll = setInterval(() => { void store.refresh('instances').catch(() => {}); }, 1000);
+  setOperationPending({ type: "system-unload", startedAt: Date.now() });
+  try {
+    await api("/v1/system/close", {
+      method: "POST",
+      body: JSON.stringify({ unloadModels: true, stopDaemon: false })
+    });
+    toast("All instances unloaded — service still running");
+    await store.refresh('instances');
+  } catch (error) {
+    toast(`Unload failed: ${error.message}`);
+  } finally {
+    clearInterval(closePoll);
+    setOperationPending(null);
+  }
+};
+
 $("closeAll").onclick = async () => {
   const confirmed = window.confirm("Stop all running instances now?");
   if (!confirmed) return;
