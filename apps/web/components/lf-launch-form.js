@@ -146,22 +146,13 @@ export async function loadModelList(selectElementId) {
   function applyModels(models, sourceLabel) {
     select.innerHTML = '<option value="">-- Select model --</option>';
 
-    // Bucket models by their source tag (or inferred from first path segment)
-    const PATH_TAGS = { unsloth: "unsloth", huggingface: "huggingface", ollama: "ollama" };
+    // Bucket models by their source tag (or "local" if none)
     const groups = new Map();
     for (const model of models) {
       const raw = model.name || model.id;
       const tagMatch = raw.match(/^\[([^\]]+)\]\s*(.+)$/);
-      let tag, relPath;
-      if (tagMatch) {
-        tag = tagMatch[1].toLowerCase();
-        relPath = tagMatch[2];
-      } else {
-        relPath = raw;
-        const firstSeg = raw.split(/[\/\\]/)[0].toLowerCase();
-        tag = PATH_TAGS[firstSeg] ?? "local";
-      }
-      const filePart = relPath.split(/[\/\\]/).pop();
+      const tag = tagMatch ? tagMatch[1].toLowerCase() : "local";
+      const filePart = (tagMatch ? tagMatch[2] : raw).split(/[\/\\]/).pop();
       if (!groups.has(tag)) groups.set(tag, []);
       groups.get(tag).push({ model, filePart });
     }
