@@ -267,10 +267,12 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
           try { ggufMeta = readGgufMetadata(modelPath); } catch (_) { /* proceed without */ }
         }
 
-        // Layer count: profile override > GGUF block_count > safe fallback of 32.
+        // Layer count: profile override > GGUF KV-cache layers > GGUF block_count > fallback 32.
+        // For hybrid models (e.g. Qwen3.5/3.6 with Gated DeltaNet), only true attention
+        // layers allocate KV cache; use attention_layer_count when available.
         const numLayers = (Number.isInteger(Number(profile.numLayers)) && Number(profile.numLayers) > 0)
           ? Number(profile.numLayers)
-          : (ggufMeta?.blockCount || 32);
+          : (ggufMeta?.kvLayerCount || ggufMeta?.blockCount || 32);
 
         // Exact KV bytes-per-token-per-layer from GGUF GQA fields.
         // Formula: 2 (K+V) × kv_heads × head_dim × bytesPerElement
@@ -339,6 +341,7 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
             model_size_mib: Math.round(modelSizeMib),
             model_max_ctx: ggufMeta?.contextLength ?? null,
             num_layers: numLayers,
+            kv_layer_count: ggufMeta?.kvLayerCount ?? null,
             kv_heads: ggufMeta?.headCountKv ?? null,
             kv_head_dim: ggufMeta?.keyLength ?? null,
             bytes_per_token_per_layer: bytesPerTokenPerLayer,
@@ -583,7 +586,7 @@ async function getGpuFreeMemoryMap() {
 }
 
 // Reads key metadata from a GGUF file's binary header.
-// Returns: { contextLength, blockCount, headCountKv, keyLength, embeddingLength, headCount, name, architecture }
+// Returns: { contextLength, blockCount, kvLayerCount, headCountKv, keyLength, embeddingLength, headCount, name, architecture }
 // All fields are null if not present or if the file is not a valid GGUF.
 function readGgufMetadata(filePath) {
   const GGUF_MAGIC_LE = 0x46554747; // 'GGUF'
@@ -631,7 +634,8 @@ function readGgufMetadata(filePath) {
 
   const result = {
     contextLength: null,  // *.context_length  — model's max trained context window
-    blockCount: null,     // *.block_count      — number of transformer layers
+    blockCount: null,     // *.block_count      — total transformer blocks (incl. non-KV layers)
+    kvLayerCount: null,   // *.attention_layer_count — KV-cache layers only (hybrid models)
     headCountKv: null,    // *.attention.head_count_kv — GQA KV heads
     keyLength: null,      // *.attention.key_length    — explicit per-head KV dimension
     embeddingLength: null,// *.embedding_length — hidden dimension
@@ -643,10 +647,10 @@ function readGgufMetadata(filePath) {
   // Model-specific metadata (architecture params) always appears before tokenizer
   // data in well-formed GGUF files. Tokenizer vocabulary arrays can be 10-50 MB
   // (150K+ string entries for large models) — far beyond our 2 MB read buffer.
-  // Strategy: return as soon as all 8 fields are found. If the buffer runs out
+  // Strategy: return as soon as all 9 fields are found. If the buffer runs out
   // mid-array (RangeError), catch it and return whatever we collected so far —
   // the important fields will already be populated.
-  const WANT = 8;
+  const WANT = 9;
   let found = 0;
   for (let i = 0; i < nKv; i++) {
     try {
@@ -657,6 +661,7 @@ function readGgufMetadata(filePath) {
       else if (key === "general.architecture" && typeof value === "string" && !result.architecture)               { result.architecture = value; found++; }
       else if (key.endsWith(".context_length") && typeof value === "number" && value > 0 && !result.contextLength) { result.contextLength = value; found++; }
       else if (key.endsWith(".block_count") && typeof value === "number" && value > 0 && !result.blockCount)     { result.blockCount = value; found++; }
+      else if (key.endsWith(".attention_layer_count") && typeof value === "number" && value > 0 && !result.kvLayerCount) { result.kvLayerCount = value; found++; }
       else if (key.endsWith(".attention.head_count_kv") && typeof value === "number" && value > 0 && !result.headCountKv) { result.headCountKv = value; found++; }
       else if (key.endsWith(".attention.key_length") && typeof value === "number" && value > 0 && !result.keyLength) { result.keyLength = value; found++; }
       else if (key.endsWith(".embedding_length") && typeof value === "number" && value > 0 && !result.embeddingLength) { result.embeddingLength = value; found++; }
