@@ -125,6 +125,54 @@ setup_models_dir() {
 
 setup_models_dir
 
+# Grant llamafleet read+write+execute on all extra scan directories that exist
+# on this machine (ollama, HuggingFace cache, unsloth, and any /media mounts
+# belonging to the invoking user) so the service can delete files from them.
+grant_extra_scan_dirs() {
+  local invoking_user="${SUDO_USER:-}"
+  if [[ -z "$invoking_user" || "$invoking_user" == "root" ]]; then
+    return
+  fi
+  if ! command -v setfacl >/dev/null 2>&1; then
+    return
+  fi
+
+  local user_home
+  user_home="$(getent passwd "$invoking_user" | cut -d: -f6)"
+
+  local extra_dirs=(
+    "$user_home/.ollama/models"
+    "/usr/share/ollama/.ollama/models"
+    "$user_home/.cache/huggingface/hub"
+    "$user_home/unsloth_studio"
+  )
+
+  # Add any /media/<invoking_user>/* mounts
+  if [[ -d "/media/$invoking_user" ]]; then
+    while IFS= read -r -d '' mount_dir; do
+      extra_dirs+=("$mount_dir")
+    done < <(find "/media/$invoking_user" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null)
+  fi
+
+  for dir in "${extra_dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    local real_dir
+    real_dir="$(realpath "$dir" 2>/dev/null || readlink -f "$dir")"
+    [[ -d "$real_dir" ]] || continue
+    # Grant rwx on the directory and rx on each parent for traversal
+    setfacl -R -m u:llamafleet:rwx "$real_dir" 2>/dev/null || true
+    local parent
+    parent="$(dirname "$real_dir")"
+    while [[ "$parent" != "/" ]]; do
+      setfacl -m u:llamafleet:rx "$parent" 2>/dev/null || true
+      parent="$(dirname "$parent")"
+    done
+    echo "ACL: llamafleet granted rwx on $real_dir"
+  done
+}
+
+grant_extra_scan_dirs
+
 # Install or detect llama-server binary before the service starts.
 bash "$REPO_ROOT/scripts/install-llama-server.sh"
 

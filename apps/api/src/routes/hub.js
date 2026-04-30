@@ -108,13 +108,17 @@ router.post("/hub/download", requireAdminToken, async (req, res) => {
       return res.status(400).json({ error: "Invalid repoId format" });
     }
 
-    const safeFilename = path.basename(filename);
-    if (safeFilename !== filename || safeFilename.includes("..")) {
+    // filename may include a repo sub-path like "UD-Q4_K_M/Model-00001-of-00004.gguf".
+    // Validate: only safe path segments, no ".." traversal, must end in .gguf.
+    const normalizedFilename = filename.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\//, "");
+    if (/(?:^|\/)\.\.(?:\/|$)/.test(normalizedFilename) || /[\x00-\x1f]/.test(normalizedFilename)) {
       return res.status(400).json({ error: "Invalid filename" });
     }
-    if (!safeFilename.toLowerCase().endsWith(".gguf")) {
+    if (!normalizedFilename.toLowerCase().endsWith(".gguf")) {
       return res.status(400).json({ error: "Only .gguf files allowed" });
     }
+    // Use only the bare filename for the local destination (no subdirectory)
+    const safeFilename = path.basename(normalizedFilename);
 
     const home = os.homedir();
     const destDir = path.resolve(modelsDir.replace(/^~/, home));
@@ -142,12 +146,15 @@ router.post("/hub/download", requireAdminToken, async (req, res) => {
 
     const jobId = crypto.randomUUID();
     const job = {
-      id: jobId, repoId, filename: safeFilename, destPath, partPath, metaPath,
+      id: jobId, repoId,
+      filename: safeFilename,       // bare name shown in UI and stored locally
+      hfFilePath: normalizedFilename, // full path used in the HF download URL
+      destPath, partPath, metaPath,
       bytesReceived: resumedFrom, totalBytes: null, resumedFrom,
       status: "pending", error: null, abortController: new AbortController(),
       bytesPerSec: null, _rateAt: Date.now(), _rateBytes: resumedFrom,
     };
-    try { fs.writeFileSync(metaPath, JSON.stringify({ repoId, filename: safeFilename })); } catch { /* non-fatal */ }
+    try { fs.writeFileSync(metaPath, JSON.stringify({ repoId, filename: safeFilename, hfFilePath: normalizedFilename })); } catch { /* non-fatal */ }
     hubDownloadJobs.set(jobId, job);
 
     // Fire-and-forget — do not await

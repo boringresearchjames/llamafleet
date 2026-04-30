@@ -71,9 +71,9 @@ class LfRoutingMap extends HTMLElement {
 
       return `<div class="route-group route-group-pool">
         <div class="route-group-header">
-          <span class="route-group-icon route-icon-pool" title="Round-robin pool: each request cycles to the next available instance">&#x21C4;</span>
+          <span class="route-group-icon route-icon-pool" title="Least-loaded pool: requests go to the instance with the fewest in-flight requests; ties broken by round-robin">&#x21C4;</span>
           <span class="route-group-name">${escapeHtml(baseStem)}</span>
-          <span class="route-group-badge">round-robin &middot; ${members.length} instances</span>
+          <span class="route-group-badge">least-loaded &middot; ${members.length} instances</span>
           <button class="route-copy-btn" data-route-copy="${escapeHtml(baseStem)}" title="Copy model name">Copy</button>
         </div>
         <div class="route-group-tip">

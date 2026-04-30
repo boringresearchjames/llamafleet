@@ -15,10 +15,6 @@ RestartSec=2
 TimeoutStopSec=60
 KillMode=control-group
 NoNewPrivileges=true
-ProtectSystem=full
-ProtectHome=read-only
-PrivateTmp=true
-ReadWritePaths=/var/lib/llamafleet /opt/llamafleet/data /home
 
 [Install]
 WantedBy=multi-user.target

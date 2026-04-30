@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0] — 2026-04-30
+
+### Added
+- **Local Models management** — `DELETE /local-models` endpoint to delete `.gguf` files from any scanned directory (primary models dir, Ollama, HuggingFace cache, Unsloth, and external drives). Requires admin token; validates paths against allowed roots to prevent traversal. Associated `.part` and `.part.meta.json` sidecars cleaned up automatically.
+- **Local Models section in Hub UI** — list, pin, and delete local models directly from the Hub page; pinned models persist across reloads.
+- **Multi-part download grouping** — files sharing a common base name in the repository file list are now grouped with a single "Download All N" button.
+- **Subdirectory-prefixed filenames** — downloads now support filenames with repository subdirectory segments (e.g. `UD-Q4_K_M/Model-00001-of-00004.gguf`); each path segment is individually percent-encoded for the HuggingFace URL while the bare filename is used for local storage.
+- **`install-systemd.sh` ACL grants** — installer now runs `grant_extra_scan_dirs()` to grant the `llamafleet` service account rwx on Ollama, HuggingFace, Unsloth, and `/media/<user>/*` mount directories at install time.
+
+### Fixed
+- Systemd service sandbox directives (`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths`) removed — caused `226/NAMESPACE` startup failures when the working directory is not under a standard system path.
+- Regex typo in HuggingFace download path-traversal check (`(?\/|$)` → `(?:\/|$)`) that caused a `SyntaxError: Invalid regular expression` on API startup.
+- Resume/restore (`restorePartialDownloads`) now persists and restores `hfFilePath` from `.part.meta.json` sidecar so subdirectory-prefixed downloads resume against the correct HF URL.
+
+---
+
 ## [0.4.0] — 2026-04-27
 
 ### Added

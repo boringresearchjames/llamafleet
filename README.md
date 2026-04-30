@@ -6,22 +6,22 @@ LlamaFleet is a lightweight Node.js control plane and operator dashboard for mul
 
 Each instance runs as an independent `llama-server` process with its own context window, queue limit, TTL, and GPU subset. LlamaFleet tracks state, catches crashes, and auto-restarts instances with configurable backoff.
 
-Every instance is reachable through a single **OpenAI-compatible API** at `http://host:8081/v1/instances/<id>/proxy/v1/...` — same bearer token, same `/v1/chat/completions` and `/v1/completions` endpoints. A top-level `/v1/chat/completions` endpoint routes by model name with automatic round-robin across instances sharing the same model, so you can set `base_url = http://host:8081/v1` once and let LlamaFleet handle load distribution.
+Every instance is reachable through a single **OpenAI-compatible API** at `http://host:8081/v1/instances/<id>/proxy/v1/...` — same bearer token, same `/v1/chat/completions` and `/v1/completions` endpoints. A top-level `/v1/chat/completions` endpoint routes by model name with **least-loaded routing** across instances sharing the same model — requests go to whichever instance has the fewest in-flight requests, with round-robin tiebreaking when all are equally idle. Set `base_url = http://host:8081/v1` once and LlamaFleet handles load distribution automatically.
 
 **Key capabilities:**
 - Per-instance GPU pinning via `CUDA_VISIBLE_DEVICES` and equivalents for AMD/Intel/Metal
 - Headless process management — start, stop, drain, kill, remove from the browser or API
 - OpenAI-compatible reverse proxy per instance — all `llama-server` processes bind to `127.0.0.1`; one port for everything
-- **Named model routing with round-robin pool support** — `POST /v1/chat/completions` with `"model": "MyModel"` round-robins across all running instances of that model; append `-1`, `-2`, etc. to pin to a specific instance (e.g. `"model": "MyModel-1"`). `GET /v1/models` returns both the pool entry and each pinned alias so any OpenAI client can discover them automatically.
-- **Heterogeneous compute pools** — combine GPU-accelerated (NVIDIA/AMD/Intel), CPU-only, and mixed-offload `llama-server` instances in the same round-robin pool under a single model name. Run a fast CUDA instance alongside a CPU fallback, or pool instances across different GPU vendors, and LlamaFleet distributes load across all of them automatically.
+- **Named model routing with least-loaded pool support** — `POST /v1/chat/completions` with `"model": "MyModel"` routes to the instance with the lowest in-flight request fraction; ties are broken with round-robin. Append `-1`, `-2`, etc. to pin to a specific instance (e.g. `"model": "MyModel-1"`). `GET /v1/models` returns both the pool entry and each pinned alias so any OpenAI client can discover them automatically.
+- **Heterogeneous compute pools** — combine GPU-accelerated (NVIDIA/AMD/Intel), CPU-only, and mixed-offload `llama-server` instances under a single model name. Load is distributed proportionally — a GPU instance with `maxInflightRequests=8` will absorb more traffic than a CPU fallback set to 1, so faster instances naturally handle more load.
 - Global bearer token auth for both dashboard and all proxy traffic
-- Config profiles — save a model + GPU + context + TTL combination and relaunch in one click
+- Config profiles — save a GPU + context + server args combination to reuse across launches
 - Auto-restart with configurable backoff on unclean exits
 - Periodic health monitoring — instances are polled every 30 s and auto-restarted if unhealthy
 - Prometheus scrape endpoint at `GET /metrics` (per-instance + per-GPU telemetry)
 - Compact VRAM bars in the GPU column with utilisation %, temperature, and power
 - Log viewer with auto-tail and clone-setup action per instance
-- Model Routing dashboard section — visual overview of which instances form a round-robin pool vs. solo routes, with one-click copy of each pinned model name
+- Model Routing dashboard section — visual overview of which instances form a least-loaded pool vs. solo routes, with one-click copy of each pinned model name
 
 LlamaFleet uses GGUF models via `llama-server` directly — no LM Studio or Ollama required. Works on NVIDIA (including pre-Ampere V100/10xx/20xx), AMD, and CPU.
 
@@ -38,7 +38,7 @@ All three tools are built on top of `llama.cpp`, so they share the same hardware
 | Pass-through `llama-server` flags | ✅ Any flag, edited per instance | ⚠ Subset via `Modelfile` params | ⚠ Subset via GUI/JSON |
 | Per-instance GPU pinning | ✅ Explicit `CUDA_VISIBLE_DEVICES` per process | ⚠ Global env var | ⚠ Per-model GPU select (recent versions) |
 | Multiple models loaded at once | ✅ Unlimited, independent processes | ✅ Via `OLLAMA_MAX_LOADED_MODELS` | ✅ JIT-loaded |
-| Round-robin pooling under one model name | ✅ Built-in across instances | ❌ | ❌ |
+| Least-loaded pooling under one model name | ✅ Built-in across instances (round-robin tiebreak) | ❌ | ❌ |
 | Heterogeneous pools (mix GPU/CPU/runtimes) | ✅ Mix any runtimes under one model name | ❌ | ❌ |
 | Any local GGUF | ✅ Scan paths + HF Hub browser | ✅ `FROM ./model.gguf` in Modelfile | ✅ Local files + HF browser |
 | Browser dashboard | ✅ | ❌ (3rd-party only) | ❌ Desktop GUI only |
@@ -56,7 +56,7 @@ All three tools are built on top of `llama.cpp`, so they share the same hardware
 <td width="50%" align="left" valign="top">
 
 **Instances &amp; Routing**<br/>
-Launch form, running instances with GPU stats, log viewer, and the routing map showing which instances share a round-robin pool.
+Launch form, running instances with GPU stats, log viewer, and the routing map showing which instances share a least-loaded pool.
 
 <a href="docs/screenshot-dashboard.png"><img src="docs/screenshot-dashboard.png" width="100%" alt="LlamaFleet dashboard — instances and routing" /></a>
 
@@ -211,7 +211,7 @@ sudo bash scripts/install-systemd.sh
 | `BRIDGE_URL` | `http://127.0.0.1:8090` | URL of the host bridge |
 | `STATE_FILE` | `./data/state.json` | Persistent state path |
 | `SHARED_CONFIG_FILE` | `./data/shared-config.yaml` | Shared config (profiles, security) |
-| `MODELS_DIR` | `~/.lmstudio/models` | Primary directory scanned for `.gguf` files. Also auto-scans `~/.ollama/models`, `~/.cache/huggingface/hub`, `~/unsloth_studio` |
+| `MODELS_DIR` | `~/.lmstudio/models` | Primary directory scanned for `.gguf` files. Also auto-scans `~/.ollama/models`, `/usr/share/ollama/.ollama/models`, `~/.cache/huggingface/hub`, `~/unsloth_studio` |
 | `LLAMAFLEET_PUBLIC_HOST` | *(unset)* | This machine's IP, used in proxy URLs shown in the dashboard |
 | `CORS_ORIGIN` | `*` | Value of `Access-Control-Allow-Origin` |
 
@@ -267,6 +267,12 @@ openssl rand -hex 32
 - Per-user or per-instance auth — one global token for everything
 - Rate limiting — your reverse proxy or firewall should handle this
 - Audit logging for individual API calls — only instance lifecycle events are logged
+
+---
+
+## Planned / TODO
+
+- **Diffusion engine support** — llama-box exposes image generation at `/v1/images/generations` (OpenAI-compatible). LlamaFleet's proxy already handles arbitrary endpoints transparently, so the remaining work is: auto-ctx sizing that skips KV cache calculations for diffusion instances, a `modelType: diffusion` flag in the launch form to suppress irrelevant fields (context length, parallel slots), and UI display of the image generation endpoint alongside the chat endpoint in the routing map. llama-box can be used as a drop-in binary replacement for `llama-server` for diffusion instances in the meantime.
 
 ---
 

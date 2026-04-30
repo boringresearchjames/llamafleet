@@ -17,6 +17,7 @@ let hubFavorites = JSON.parse(localStorage.getItem("hub_favorites") || "[]");
 let hubActiveFilter = { author: "", tags: "" };
 let hubDownloadPollTimer = null;
 let hubRepoFilesCache = {};
+const PART_RE = /-(\d{5})-of-\d{5}\.gguf$/i;
 
 function getHfToken() { return localStorage.getItem("hf_token") || ""; }
 
@@ -110,7 +111,9 @@ function hubLaunchFav(repoId, filename) {
 
   const sel = document.getElementById("launchInstanceModel");
   if (sel) {
-    const opt = Array.from(sel.options).find((o) => o.value.includes(filename) || o.text.includes(filename));
+    // For local models repoId === "__local__" and filename is the full path
+    const searchVal = repoId === "__local__" ? filename : filename;
+    const opt = Array.from(sel.options).find((o) => o.value === searchVal || o.value.includes(searchVal) || o.text.includes(searchVal));
     if (opt) {
       sel.value = opt.value;
       sel.dispatchEvent(new Event("change"));
@@ -266,6 +269,92 @@ async function clearCompletedDownloads() {
   }
 }
 
+// ── Local models ──────────────────────────────────────────────────────────
+
+function localQuantLabel(filename) {
+  const m = filename.match(/[_-]((?:IQ[2-4]|Q[2-8])[_A-Z0-9]*?)(?:[_-](?:large|small|medium|imat|imatrix))?\.gguf$/i);
+  return m ? m[1].toUpperCase() : "GGUF";
+}
+
+function localQuantTier(label) {
+  const u = label.toUpperCase();
+  if (/^(Q4_K_M|Q4_K_S|Q4_K|IQ4_XS|Q4_0)$/.test(u)) return "recommended";
+  if (/^(Q5_K_M|Q5_K_S|Q5_K)$/.test(u)) return "balanced";
+  if (/^(Q8_0|Q6_K)$/.test(u)) return "quality";
+  if (/^(IQ[23]_|Q3_K_M|Q2_K)/.test(u)) return "imatrix";
+  if (/^(BF16|F16|F32)$/.test(u)) return "large";
+  return "other";
+}
+
+function isLocalPinned(filePath) {
+  return hubFavorites.some((f) => f.repoId === "__local__" && f.filename === filePath);
+}
+
+function toggleLocalPin(filePath, btn) {
+  if (isLocalPinned(filePath)) {
+    hubFavorites = hubFavorites.filter((f) => !(f.repoId === "__local__" && f.filename === filePath));
+    saveFavorites();
+    btn.classList.remove("hub-pinned");
+    btn.title = "Pin to Favorites";
+  } else {
+    const label = localQuantLabel(filePath);
+    hubFavorites.unshift({ repoId: "__local__", filename: filePath, quantTier: localQuantTier(label), quantLabel: label });
+    saveFavorites();
+    btn.classList.add("hub-pinned");
+    btn.title = "Unpin";
+  }
+  renderFavorites();
+}
+
+async function deleteLocalModel(filePath, row) {
+  if (!confirm(`Delete ${filePath.split(/[\\/]/).pop()}?\n\nThis cannot be undone.`)) return;
+  try {
+    await api("/v1/local-models", { method: "DELETE", body: JSON.stringify({ path: filePath }) });
+    // Remove from favorites if pinned
+    hubFavorites = hubFavorites.filter((f) => !(f.repoId === "__local__" && f.filename === filePath));
+    saveFavorites();
+    renderFavorites();
+    row.remove();
+    toast(`Deleted ${filePath.split(/[\\/]/).pop()}`);
+  } catch (err) {
+    alert("Delete failed: " + err.message);
+  }
+}
+
+async function loadLocalModels() {
+  const list = document.getElementById("localModelsList");
+  const header = document.getElementById("localModelsHeader");
+  if (!list) return;
+  list.innerHTML = '<span class="hub-empty">Scanning\u2026</span>';
+  try {
+    const res = await api("/v1/local-models");
+    const models = res.data || [];
+    if (header) header.textContent = `Local Models (${models.length})`;
+    if (!models.length) {
+      list.innerHTML = '<span class="hub-empty">No GGUF files found in scanned directories.</span>';
+      return;
+    }
+    list.innerHTML = models.map((m) => {
+      const label = localQuantLabel(m.name);
+      const tier = localQuantTier(label);
+      const pinned = isLocalPinned(m.id);
+      const mId = escapeAttr(m.id);
+      const sizeStr = m.size ? (m.size >= 1e9 ? (m.size / 1e9).toFixed(1) + " GB" : (m.size / 1e6).toFixed(0) + " MB") : "?";
+      return `<div class="hub-local-row" id="localrow-${CSS.escape(m.id)}">
+        <span class="hub-local-name" title="${mId}">${escapeHtml(m.name)}</span>
+        <span class="hub-local-size">${escapeHtml(sizeStr)}</span>
+        <span>${quantBadgeHtml(tier, label)}</span>
+        <span class="hub-local-actions">
+          <button class="hub-pin-btn${pinned ? " hub-pinned" : ""}" data-action="local-pin" data-path="${mId}" title="${pinned ? "Unpin" : "Pin to Favorites"}">&#x2605;</button>
+          <button class="hub-local-del" data-action="local-delete" data-path="${mId}" title="Delete file from disk">&#x1F5D1;</button>
+        </span>
+      </div>`;
+    }).join("");
+  } catch (err) {
+    list.innerHTML = `<span class="hub-empty" style="color:var(--danger)">Error: ${escapeHtml(err.message)}</span>`;
+  }
+}
+
 // ── Hub search & browse ───────────────────────────────────────────────────
 
 async function searchHub(q, author, tags) {
@@ -358,29 +447,81 @@ function renderRepoFiles(repoId, files) {
     return;
   }
   const safeRepoId = escapeAttr(repoId);
-  tbody.innerHTML = files.map((f) => {
-    const pinned = isPinned(repoId, f.filename);
-    const progId = `hubprog-${CSS.escape(repoId + "/" + f.filename)}`;
-    const fFn = escapeAttr(f.filename);
-    const fQt = escapeAttr(f.quantTier);
-    const fQl = escapeAttr(f.quantLabel);
-    return `
-      <tr>
-        <td class="hub-file-name">${escapeHtml(f.filename)}</td>
-        <td class="hub-file-size">${fmtBytes(f.size)}</td>
-        <td>${quantBadgeHtml(f.quantTier, f.quantLabel)}</td>
-        <td class="hub-file-actions">
-          <div id="${progId}"></div>
-          <button class="hub-pin-btn${pinned ? " hub-pinned" : ""}"
-            data-action="pin" data-repo-id="${safeRepoId}" data-filename="${fFn}"
-            data-quant-tier="${fQt}" data-quant-label="${fQl}"
-            title="${pinned ? "Unpin" : "Pin to Favorites"}">&#x2605;</button>
-          <button class="hub-dl-btn"
-            data-action="download" data-repo-id="${safeRepoId}" data-filename="${fFn}"
-            data-quant-tier="${fQt}" data-quant-label="${fQl}"
-            title="Download">\u2193 Download</button>
-        </td>
-      </tr>`;
+  const items = groupFiles(files);
+  tbody.innerHTML = items.map((item) => {
+    if (item.type === "single") {
+      const f = item.file;
+      const pinned = isPinned(repoId, f.filename);
+      const progId = `hubprog-${CSS.escape(repoId + "/" + f.filename)}`;
+      const fFn = escapeAttr(f.filename);
+      const fQt = escapeAttr(f.quantTier);
+      const fQl = escapeAttr(f.quantLabel);
+      return `
+        <tr>
+          <td class="hub-file-name">${escapeHtml(f.filename)}</td>
+          <td class="hub-file-size">${fmtBytes(f.size)}</td>
+          <td>${quantBadgeHtml(f.quantTier, f.quantLabel)}</td>
+          <td class="hub-file-actions">
+            <div id="${progId}"></div>
+            <button class="hub-pin-btn${pinned ? " hub-pinned" : ""}"
+              data-action="pin" data-repo-id="${safeRepoId}" data-filename="${fFn}"
+              data-quant-tier="${fQt}" data-quant-label="${fQl}"
+              title="${pinned ? "Unpin" : "Pin to Favorites"}">&#x2605;</button>
+            <button class="hub-dl-btn"
+              data-action="download" data-repo-id="${safeRepoId}" data-filename="${fFn}"
+              data-quant-tier="${fQt}" data-quant-label="${fQl}"
+              title="Download">\u2193 Download</button>
+          </td>
+        </tr>`;
+    } else {
+      // Multi-part group
+      const { key, parts } = item;
+      const totalSize = parts.reduce((s, p) => s + (p.size || 0), 0);
+      const f0 = parts[0];
+      const pinned = isPinned(repoId, f0.filename);
+      const safeKey = escapeAttr(key);
+      const groupCssId = `hubgroup-${CSS.escape(repoId + "/" + key)}`;
+      const fQt = escapeAttr(f0.quantTier);
+      const fQl = escapeAttr(f0.quantLabel);
+      const fFn0 = escapeAttr(f0.filename);
+      const partRows = parts.map((f) => {
+        const fFn = escapeAttr(f.filename);
+        const progId = `hubprog-${CSS.escape(repoId + "/" + f.filename)}`;
+        return `
+          <tr class="hub-part-row" data-group="${groupCssId}" hidden>
+            <td class="hub-file-name hub-part-name">\u2514 ${escapeHtml(f.filename.split("/").pop())}</td>
+            <td class="hub-file-size">${fmtBytes(f.size)}</td>
+            <td></td>
+            <td class="hub-file-actions">
+              <div id="${progId}"></div>
+              <button class="hub-dl-btn hub-dl-btn-sm"
+                data-action="download" data-repo-id="${safeRepoId}" data-filename="${fFn}"
+                data-quant-tier="${fQt}" data-quant-label="${fQl}"
+                title="Download this part">\u2193</button>
+            </td>
+          </tr>`;
+      }).join("");
+      return `
+        <tr class="hub-group-row" id="${groupCssId}">
+          <td class="hub-file-name">
+            <button class="hub-group-toggle" data-action="toggle-group" data-group-id="${groupCssId}" title="Show/hide individual parts">&#x25BA;</button>
+            ${escapeHtml(key.split("/").pop())}
+            <span class="hub-part-count">${parts.length} parts</span>
+          </td>
+          <td class="hub-file-size">${fmtBytes(totalSize)}</td>
+          <td>${quantBadgeHtml(f0.quantTier, f0.quantLabel)}</td>
+          <td class="hub-file-actions">
+            <button class="hub-pin-btn${pinned ? " hub-pinned" : ""}"
+              data-action="pin" data-repo-id="${safeRepoId}" data-filename="${fFn0}"
+              data-quant-tier="${fQt}" data-quant-label="${fQl}"
+              title="${pinned ? "Unpin" : "Pin to Favorites"}">&#x2605;</button>
+            <button class="hub-dl-btn hub-dl-all-btn"
+              data-action="download-all" data-repo-id="${safeRepoId}" data-group-key="${safeKey}"
+              title="Download all ${parts.length} parts">\u2193 All ${parts.length}</button>
+          </td>
+        </tr>
+        ${partRows}`;
+    }
   }).join("");
 }
 
@@ -403,6 +544,39 @@ async function handleDownloadClick(repoId, filename, quantTier, quantLabel, btn)
   btn.textContent = "\u2193 Download";
   btn.disabled = false;
   startDownloadPoll();
+}
+
+async function handleDownloadAllClick(repoId, groupKey, btn) {
+  const parts = (hubRepoFilesCache[repoId] || []).filter((f) => f.filename.replace(PART_RE, "") === groupKey);
+  if (!parts.length) return;
+  btn.disabled = true;
+  const origText = btn.textContent;
+  for (let i = 0; i < parts.length; i++) {
+    btn.textContent = `\u23F3 ${i + 1}/${parts.length}\u2026`;
+    await startDownload(repoId, parts[i].filename);
+  }
+  btn.textContent = origText;
+  btn.disabled = false;
+}
+
+function groupFiles(files) {
+  const groups = new Map();
+  const order = [];
+  for (const f of files) {
+    const m = f.filename.match(PART_RE);
+    if (m) {
+      const key = f.filename.replace(PART_RE, "");
+      if (!groups.has(key)) { groups.set(key, []); order.push({ type: "group", key }); }
+      groups.get(key).push(f);
+    } else {
+      order.push({ type: "single", file: f });
+    }
+  }
+  return order.map((item) => {
+    if (item.type === "single") return item;
+    const parts = groups.get(item.key);
+    return parts.length === 1 ? { type: "single", file: parts[0] } : { type: "group", key: item.key, parts };
+  });
 }
 
 // ── Custom element ────────────────────────────────────────────────────────
@@ -437,6 +611,14 @@ class LfHubPage extends HTMLElement {
   <div id="hubDownloadsList" class="hub-downloads-list"></div>
 </section>
 
+<section class="card span-12" id="localModelsCard">
+  <div class="section-header">
+    <div><h2>&#x1F4C2; <span id="localModelsHeader">Local Models</span></h2><p class="card-subtitle">GGUF files on disk. Star to pin to Favorites, trash to delete.</p></div>
+    <button id="localModelsRefresh" class="copy" type="button">&#x21BB; Refresh</button>
+  </div>
+  <div id="localModelsList" class="hub-local-list"><span class="hub-empty">Scanning\u2026</span></div>
+</section>
+
 <section class="card span-12">
   <div class="section-header">
     <div><h2>Browse Libraries</h2><p class="card-subtitle">Top GGUF repos from popular publishers.</p></div>
@@ -469,6 +651,7 @@ class LfHubPage extends HTMLElement {
 
     this._wireEvents();
     renderFavorites();
+    loadLocalModels();
     api("/v1/hub/downloads").then((res) => {
       if ((res.data || []).some((j) => j.status === "downloading" || j.status === "pending")) {
         startDownloadPoll();
@@ -522,6 +705,20 @@ class LfHubPage extends HTMLElement {
     });
 
     document.getElementById("hubDownloadsClear")?.addEventListener("click", clearCompletedDownloads);
+    document.getElementById("localModelsRefresh")?.addEventListener("click", loadLocalModels);
+
+    // Delegated clicks for local models list
+    const localList = document.getElementById("localModelsList");
+    if (localList) localList.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-action]");
+      if (!btn) return;
+      const { action, path: filePath } = btn.dataset;
+      if (action === "local-pin") toggleLocalPin(filePath, btn);
+      else if (action === "local-delete") {
+        const row = document.getElementById(`localrow-${CSS.escape(filePath)}`);
+        deleteLocalModel(filePath, row);
+      }
+    });
 
     // Delegated clicks for favorites
     const favList = document.getElementById("hubFavoritesList");
@@ -556,8 +753,15 @@ class LfHubPage extends HTMLElement {
       const btn = e.target.closest("button[data-action]");
       if (!btn) return;
       const { action, repoId, filename, quantTier, quantLabel } = btn.dataset;
-      if (action === "pin") togglePin(repoId, filename, quantTier, quantLabel, btn);
+      if (action === "toggle-group") {
+        const groupId = btn.dataset.groupId;
+        const isExpanded = btn.classList.toggle("hub-group-expanded");
+        btn.innerHTML = isExpanded ? "&#x25BC;" : "&#x25BA;";
+        const tbl = btn.closest("tbody");
+        if (tbl) tbl.querySelectorAll(`.hub-part-row[data-group="${CSS.escape(groupId)}"]`).forEach((r) => { r.hidden = !isExpanded; });
+      } else if (action === "pin") togglePin(repoId, filename, quantTier, quantLabel, btn);
       else if (action === "download") handleDownloadClick(repoId, filename, quantTier, quantLabel, btn);
+      else if (action === "download-all") handleDownloadAllClick(repoId, btn.dataset.groupKey, btn);
     });
   }
 }

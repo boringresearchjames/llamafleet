@@ -39,7 +39,7 @@ export function parseBindHost(value) {
 export function normalizeRuntimeBackend(value) {
   const raw = String(value || "auto").trim().toLowerCase();
   if (raw === "valkun") return "vulkan";
-  if (["auto", "cuda", "cuda_full", "cuda12", "cpu", "vulkan"].includes(raw)) return raw;
+  if (["auto", "cuda", "cuda_full", "cuda12", "rocm", "rocm_full", "cpu", "vulkan"].includes(raw)) return raw;
   return "auto";
 }
 

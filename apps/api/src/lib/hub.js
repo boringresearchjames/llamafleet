@@ -45,14 +45,16 @@ export async function hfFetch(urlPath, hfToken) {
  * see live progress updates.
  */
 export async function executeHubDownload(job, hfToken) {
-  const { repoId, filename: safeFilename, destPath, partPath, metaPath } = job;
+  const { repoId, filename: safeFilename, hfFilePath, destPath, partPath, metaPath } = job;
   let resumedFrom = job.resumedFrom;
   let fileHandle = null;
   let reader = null;
 
   try {
     job.status = "downloading";
-    const dlUrl = `${HF_API}/${repoId}/resolve/main/${encodeURIComponent(safeFilename)}?download=true`;
+    // hfFilePath may contain subdirectory segments (e.g. "UD-Q4_K_M/file.gguf") — encode each segment separately
+    const encodedHfPath = (hfFilePath || safeFilename).split("/").map(encodeURIComponent).join("/");
+    const dlUrl = `${HF_API}/${repoId}/resolve/main/${encodedHfPath}?download=true`;
     const headers = { "User-Agent": "LlamaFleet/1.0" };
     if (hfToken) headers["Authorization"] = `Bearer ${hfToken}`;
     if (resumedFrom > 0) headers["Range"] = `bytes=${resumedFrom}-`;
@@ -155,6 +157,7 @@ export function restorePartialDownloads() {
     const jobId = crypto.randomUUID();
     hubDownloadJobs.set(jobId, {
       id: jobId, repoId: meta.repoId, filename: meta.filename,
+      hfFilePath: meta.hfFilePath || meta.filename,
       destPath, partPath, metaPath,
       bytesReceived: size, totalBytes: null, resumedFrom: size,
       status: "paused", error: null, abortController: new AbortController(),
