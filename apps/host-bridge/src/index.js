@@ -268,6 +268,7 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
         // Free VRAM is sampled BEFORE the model loads, so model weights must be subtracted
         // or the computed ctx-size will exceed what actually fits (model + KV > total VRAM).
         let modelSizeMib = 0;
+        let modelMaxCtx = null;
         const modelPath = String(profile.model || "").trim();
         if (modelPath) {
           try {
@@ -276,13 +277,24 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
           } catch (_) {
             // model file not accessible — modelSizeMib stays 0; buffer is the only guard
           }
+          try {
+            modelMaxCtx = readGgufContextLength(modelPath);
+          } catch (_) {
+            // GGUF read failed — proceed without cap
+          }
         }
-        const autoCtx = computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib);
+        let autoCtx = computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib);
+        // Cap against the model's trained context length stored in the GGUF header.
+        // Exceeding this produces garbage output (RoPE embeddings out of distribution).
+        if (autoCtx && modelMaxCtx && autoCtx > modelMaxCtx) {
+          autoCtx = modelMaxCtx;
+        }
         if (autoCtx) {
           profile.contextLength = autoCtx;
           writeMeta(instanceId, "instance.auto_ctx", {
             free_mib: Object.fromEntries(freeMibMap),
             model_size_mib: Math.round(modelSizeMib),
+            model_max_ctx: modelMaxCtx,
             gpu_ids: gpuIds,
             num_layers: numLayers,
             buffer_fraction: autoCtxVramBufferFraction,
@@ -520,6 +532,63 @@ async function getGpuFreeMemoryMap() {
   } catch {
     return null;
   }
+}
+
+// Reads the model's trained context length from a GGUF file's metadata header.
+// Returns the uint32 value of the first key ending in '.context_length', or null.
+function readGgufContextLength(filePath) {
+  const GGUF_MAGIC_LE = 0x46554747; // 'GGUF'
+  // Read up to 2 MB — enough to cover all metadata KV pairs for any known model.
+  const fd = fs.openSync(filePath, "r");
+  const buf = Buffer.alloc(2 * 1024 * 1024);
+  const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+  fs.closeSync(fd);
+  const data = buf.subarray(0, bytesRead);
+
+  let off = 0;
+  function u8()  { const v = data.readUInt8(off);      off += 1; return v; }
+  function u16() { const v = data.readUInt16LE(off);   off += 2; return v; }
+  function u32() { const v = data.readUInt32LE(off);   off += 4; return v; }
+  function i32() { const v = data.readInt32LE(off);    off += 4; return v; }
+  function f32() { const v = data.readFloatLE(off);    off += 4; return v; }
+  function u64() { const v = Number(data.readBigUInt64LE(off)); off += 8; return v; }
+  function i64() { const v = Number(data.readBigInt64LE(off));  off += 8; return v; }
+  function f64() { const v = data.readDoubleLE(off);   off += 8; return v; }
+  function str() { const len = u64(); const s = data.toString("utf8", off, off + len); off += len; return s; }
+  function val(type) {
+    switch (type) {
+      case 0:  return u8();             // UINT8
+      case 1:  return u8();             // INT8
+      case 2:  return u16();            // UINT16
+      case 3:  return u16();            // INT16
+      case 4:  return u32();            // UINT32
+      case 5:  return i32();            // INT32
+      case 6:  return f32();            // FLOAT32
+      case 7:  return u8() !== 0;       // BOOL
+      case 8:  return str();            // STRING
+      case 9:  { const t = u32(); const cnt = u64(); for (let i = 0; i < cnt; i++) val(t); return null; } // ARRAY — skip
+      case 10: return u64();            // UINT64
+      case 11: return i64();            // INT64
+      case 12: return f64();            // FLOAT64
+      default: throw new Error(`Unknown GGUF type ${type}`);
+    }
+  }
+
+  if (u32() !== GGUF_MAGIC_LE) return null; // not a GGUF file
+  const version = u32();
+  if (version < 1 || version > 3) return null; // unsupported version
+  u64(); // n_tensors
+  const nKv = u64();
+
+  for (let i = 0; i < nKv; i++) {
+    const key = str();
+    const type = u32();
+    const value = val(type);
+    if (key.endsWith(".context_length") && typeof value === "number" && value > 0) {
+      return value;
+    }
+  }
+  return null;
 }
 
 // Computes a safe --ctx-size from free VRAM across the assigned GPU set.
