@@ -21,7 +21,7 @@ const allowBleedOnOtherAssignedGpus = process.env.GPU_BLEED_ALLOW_OTHER_ASSIGNED
 const enforceGpuBleedInMultiInstance = process.env.GPU_BLEED_ENFORCE_MULTI_INSTANCE === "true";
 // Fraction of free VRAM to reserve as a safety buffer when auto-sizing ctx.
 // e.g. 0.20 = keep 20% of free VRAM free, use the other 80% for KV cache.
-const autoCtxVramBufferFraction = Math.min(0.9, Math.max(0, Number(process.env.AUTO_CTX_VRAM_BUFFER || 0.20)));
+const autoCtxVramBufferFraction = Math.min(0.9, Math.max(0, Number(process.env.AUTO_CTX_VRAM_BUFFER || 0.05)));
 // Bytes of KV cache consumed per context token per layer (fp16 K+V = 2*2 bytes per head).
 // This is a conservative heuristic; actual usage depends on model architecture & kv quant.
 const autoCtxBytesPerTokenPerLayer = Number(process.env.AUTO_CTX_BYTES_PER_TOKEN_PER_LAYER || 512);
