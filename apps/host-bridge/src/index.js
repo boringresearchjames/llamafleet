@@ -259,17 +259,31 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
     if (gpuIds.length > 0) {
       try {
         const freeMibMap = await getGpuFreeMemoryMap();
-        // Probe llama-server for the model's layer count via --list-model-params if available,
-        // otherwise use the heuristic numLayers from the profile or fall back to 32 (common default).
+
+        // Read GGUF metadata once: gives us layer count, GQA dims, max ctx, name, arch.
+        let ggufMeta = null;
+        const modelPath = String(profile.model || "").trim();
+        if (modelPath) {
+          try { ggufMeta = readGgufMetadata(modelPath); } catch (_) { /* proceed without */ }
+        }
+
+        // Layer count: profile override > GGUF block_count > safe fallback of 32.
         const numLayers = (Number.isInteger(Number(profile.numLayers)) && Number(profile.numLayers) > 0)
           ? Number(profile.numLayers)
-          : 32;
-        // Estimate model weight VRAM from the GGUF file size on disk.
-        // Free VRAM is sampled BEFORE the model loads, so model weights must be subtracted
-        // or the computed ctx-size will exceed what actually fits (model + KV > total VRAM).
+          : (ggufMeta?.blockCount || 32);
+
+        // Exact KV bytes-per-token-per-layer from GGUF GQA fields.
+        // Formula: 2 (K+V) × kv_heads × head_dim × 2 bytes (fp16) = 4 × kv_heads × (embed / q_heads)
+        // Falls back to autoCtxBytesPerTokenPerLayer env-var heuristic if fields missing.
+        let bytesPerTokenPerLayer = null;
+        if (ggufMeta?.headCountKv && ggufMeta?.embeddingLength && ggufMeta?.headCount) {
+          const headDim = Math.floor(ggufMeta.embeddingLength / ggufMeta.headCount);
+          bytesPerTokenPerLayer = 4 * ggufMeta.headCountKv * headDim;
+        }
+
+        // Estimate model weight VRAM from GGUF file size on disk.
+        // Free VRAM is sampled BEFORE the model loads, so weights must be subtracted.
         let modelSizeMib = 0;
-        let modelMaxCtx = null;
-        const modelPath = String(profile.model || "").trim();
         if (modelPath) {
           try {
             const stat = fs.statSync(modelPath);
@@ -277,26 +291,28 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
           } catch (_) {
             // model file not accessible — modelSizeMib stays 0; buffer is the only guard
           }
-          try {
-            modelMaxCtx = readGgufContextLength(modelPath);
-          } catch (_) {
-            // GGUF read failed — proceed without cap
-          }
         }
-        let autoCtx = computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib);
+
+        // Store GGUF name/arch on profile so /v1/instances can surface them.
+        if (ggufMeta?.name) profile._ggufName = ggufMeta.name;
+        if (ggufMeta?.architecture) profile._ggufArchitecture = ggufMeta.architecture;
+
+        let autoCtx = computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib, bytesPerTokenPerLayer);
         // Cap against the model's trained context length stored in the GGUF header.
         // Exceeding this produces garbage output (RoPE embeddings out of distribution).
-        if (autoCtx && modelMaxCtx && autoCtx > modelMaxCtx) {
-          autoCtx = modelMaxCtx;
+        if (autoCtx && ggufMeta?.contextLength && autoCtx > ggufMeta.contextLength) {
+          autoCtx = ggufMeta.contextLength;
         }
         if (autoCtx) {
           profile.contextLength = autoCtx;
           writeMeta(instanceId, "instance.auto_ctx", {
             free_mib: Object.fromEntries(freeMibMap),
             model_size_mib: Math.round(modelSizeMib),
-            model_max_ctx: modelMaxCtx,
-            gpu_ids: gpuIds,
+            model_max_ctx: ggufMeta?.contextLength ?? null,
             num_layers: numLayers,
+            kv_heads: ggufMeta?.headCountKv ?? null,
+            bytes_per_token_per_layer: bytesPerTokenPerLayer,
+            gpu_ids: gpuIds,
             buffer_fraction: autoCtxVramBufferFraction,
             computed_ctx: autoCtx
           });
@@ -534,9 +550,10 @@ async function getGpuFreeMemoryMap() {
   }
 }
 
-// Reads the model's trained context length from a GGUF file's metadata header.
-// Returns the uint32 value of the first key ending in '.context_length', or null.
-function readGgufContextLength(filePath) {
+// Reads key metadata from a GGUF file's binary header.
+// Returns: { contextLength, blockCount, headCountKv, embeddingLength, headCount, name, architecture }
+// All fields are null if not present or if the file is not a valid GGUF.
+function readGgufMetadata(filePath) {
   const GGUF_MAGIC_LE = 0x46554747; // 'GGUF'
   // Read up to 2 MB — enough to cover all metadata KV pairs for any known model.
   const fd = fs.openSync(filePath, "r");
@@ -574,27 +591,42 @@ function readGgufContextLength(filePath) {
     }
   }
 
-  if (u32() !== GGUF_MAGIC_LE) return null; // not a GGUF file
+  if (u32() !== GGUF_MAGIC_LE) return null;
   const version = u32();
-  if (version < 1 || version > 3) return null; // unsupported version
+  if (version < 1 || version > 3) return null;
   u64(); // n_tensors
   const nKv = u64();
+
+  const result = {
+    contextLength: null,  // *.context_length  — model's max trained context window
+    blockCount: null,     // *.block_count      — number of transformer layers
+    headCountKv: null,    // *.attention.head_count_kv — GQA KV heads
+    embeddingLength: null,// *.embedding_length — hidden dimension
+    headCount: null,      // *.attention.head_count    — query heads
+    name: null,           // general.name       — human-readable model name
+    architecture: null,   // general.architecture — e.g. "llama", "qwen2", "mistral"
+  };
 
   for (let i = 0; i < nKv; i++) {
     const key = str();
     const type = u32();
     const value = val(type);
-    if (key.endsWith(".context_length") && typeof value === "number" && value > 0) {
-      return value;
-    }
+    if (key === "general.name" && typeof value === "string") result.name = value;
+    else if (key === "general.architecture" && typeof value === "string") result.architecture = value;
+    else if (key.endsWith(".context_length") && typeof value === "number" && value > 0) result.contextLength = value;
+    else if (key.endsWith(".block_count") && typeof value === "number" && value > 0) result.blockCount = value;
+    else if (key.endsWith(".attention.head_count_kv") && typeof value === "number" && value > 0) result.headCountKv = value;
+    else if (key.endsWith(".embedding_length") && typeof value === "number" && value > 0) result.embeddingLength = value;
+    else if (key.endsWith(".attention.head_count") && typeof value === "number" && value > 0) result.headCount = value;
   }
-  return null;
+  return result;
 }
 
 // Computes a safe --ctx-size from free VRAM across the assigned GPU set.
 // freeMibMap: Map<gpuIndex, freeMiB>; gpuIds: string[]; numLayers: number.
+// bytesPerTokenPerLayer: exact KV cost from GGUF metadata (falls back to autoCtxBytesPerTokenPerLayer).
 // Returns null if inputs are insufficient (caller skips auto-sizing).
-function computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib = 0) {
+function computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib = 0, bytesPerTokenPerLayer = null) {
   if (!(freeMibMap instanceof Map) || freeMibMap.size === 0) return null;
   if (!Array.isArray(gpuIds) || gpuIds.length === 0) return null;
   if (!Number.isInteger(numLayers) || numLayers <= 0) return null;
@@ -611,9 +643,14 @@ function computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib = 0) {
   // model file size must be deducted to avoid model + KV cache exceeding total VRAM).
   const kvBudgetMib = Math.max(0, totalFreeMiB - (Number.isFinite(modelSizeMib) ? modelSizeMib : 0));
 
+  // Use caller-supplied exact KV cost if available, else fall back to env-var heuristic.
+  const bpt = (Number.isFinite(bytesPerTokenPerLayer) && bytesPerTokenPerLayer > 0)
+    ? bytesPerTokenPerLayer
+    : autoCtxBytesPerTokenPerLayer;
+
   // Reserve buffer fraction, convert remaining to bytes.
   const usableBytes = kvBudgetMib * (1 - autoCtxVramBufferFraction) * 1024 * 1024;
-  const ctxSize = Math.floor(usableBytes / (numLayers * autoCtxBytesPerTokenPerLayer));
+  const ctxSize = Math.floor(usableBytes / (numLayers * bpt));
 
   // Clamp: minimum 512 tokens, round down to nearest 256 for clean numbers.
   if (ctxSize < 512) return null;
@@ -1137,7 +1174,9 @@ app.get("/v1/instances", (_req, res) => {
     drain: value.drain,
     resolvedContextLength: Number.isInteger(Number(value.profile?.contextLength)) && Number(value.profile?.contextLength) > 0
       ? Number(value.profile.contextLength)
-      : null
+      : null,
+    ggufName: value.profile?._ggufName ?? null,
+    ggufArchitecture: value.profile?._ggufArchitecture ?? null
   }));
   res.json({ data });
 });

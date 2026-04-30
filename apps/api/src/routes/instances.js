@@ -62,6 +62,8 @@ router.get("/instances", async (_req, res) => {
         queueDepth: mergedQueueDepth,
         gpuStats,
         resolvedContextLength: runtime?.resolvedContextLength ?? null,
+        ggufName: runtime?.ggufName ?? null,
+        ggufArchitecture: runtime?.ggufArchitecture ?? null,
         updatedAt: now()
       };
     });
