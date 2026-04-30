@@ -1065,7 +1065,10 @@ app.get("/v1/instances", (_req, res) => {
     state: value.state,
     inflightRequests: value.inflightRequests,
     queueDepth: value.queueDepth,
-    drain: value.drain
+    drain: value.drain,
+    resolvedContextLength: Number.isInteger(Number(value.profile?.contextLength)) && Number(value.profile?.contextLength) > 0
+      ? Number(value.profile.contextLength)
+      : null
   }));
   res.json({ data });
 });

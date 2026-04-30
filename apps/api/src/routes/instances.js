@@ -61,6 +61,7 @@ router.get("/instances", async (_req, res) => {
         inflightRequests: mergedInflight,
         queueDepth: mergedQueueDepth,
         gpuStats,
+        resolvedContextLength: runtime?.resolvedContextLength ?? null,
         updatedAt: now()
       };
     });
