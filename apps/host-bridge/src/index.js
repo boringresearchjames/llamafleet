@@ -316,7 +316,8 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
         if (ggufMeta?.name) profile._ggufName = ggufMeta.name;
         if (ggufMeta?.architecture) profile._ggufArchitecture = ggufMeta.architecture;
 
-        let autoCtx = computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib, bytesPerTokenPerLayer);
+        const parallelSlots = Math.max(1, Math.min(64, Number(profile?.maxInflightRequests) || 1));
+        let autoCtx = computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib, bytesPerTokenPerLayer, parallelSlots);
         // Cap against the model's trained context length stored in the GGUF header.
         // Exceeding this produces garbage output (RoPE embeddings out of distribution).
         if (autoCtx && ggufMeta?.contextLength && autoCtx > ggufMeta.contextLength) {
@@ -334,6 +335,7 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
             kv_quant_bytes_per_element: kvQuantBytesPerElement,
             gpu_ids: gpuIds,
             buffer_fraction: autoCtxVramBufferFraction,
+            parallel_slots: parallelSlots,
             computed_ctx: autoCtx
           });
         }
@@ -661,7 +663,7 @@ function readGgufMetadata(filePath) {
 // freeMibMap: Map<gpuIndex, freeMiB>; gpuIds: string[]; numLayers: number.
 // bytesPerTokenPerLayer: exact KV cost from GGUF metadata (falls back to autoCtxBytesPerTokenPerLayer).
 // Returns null if inputs are insufficient (caller skips auto-sizing).
-function computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib = 0, bytesPerTokenPerLayer = null) {
+function computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib = 0, bytesPerTokenPerLayer = null, parallelSlots = 1) {
   if (!(freeMibMap instanceof Map) || freeMibMap.size === 0) return null;
   if (!Array.isArray(gpuIds) || gpuIds.length === 0) return null;
   if (!Number.isInteger(numLayers) || numLayers <= 0) return null;
@@ -684,8 +686,9 @@ function computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib = 0, byt
     : autoCtxBytesPerTokenPerLayer;
 
   // Reserve buffer fraction, convert remaining to bytes.
+  // Divide by parallelSlots: llama-server allocates KV cache for all slots simultaneously.
   const usableBytes = kvBudgetMib * (1 - autoCtxVramBufferFraction) * 1024 * 1024;
-  const ctxSize = Math.floor(usableBytes / (numLayers * bpt));
+  const ctxSize = Math.floor(usableBytes / (numLayers * bpt * Math.max(1, parallelSlots)));
 
   // Clamp: minimum 512 tokens, round down to nearest 256 for clean numbers.
   if (ctxSize < 512) return null;
