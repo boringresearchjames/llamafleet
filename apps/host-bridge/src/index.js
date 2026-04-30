@@ -267,12 +267,24 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
           try { ggufMeta = readGgufMetadata(modelPath); } catch (_) { /* proceed without */ }
         }
 
-        // Layer count: profile override > GGUF KV-cache layers > GGUF block_count > fallback 32.
+        // Layer count: profile override > GGUF KV-cache layers > arch-specific ratio > GGUF block_count > fallback 32.
         // For hybrid models (e.g. Qwen3.5/3.6 with Gated DeltaNet), only true attention
         // layers allocate KV cache; use attention_layer_count when available.
+        // When that key is absent, fall back to architecture-specific ratios derived from
+        // the published model architecture (e.g. qwen35: 1 attention per 4 blocks = 0.25).
+        const HYBRID_ATTENTION_RATIO = { qwen35: 0.25, qwen3_5: 0.25 };
         const numLayers = (Number.isInteger(Number(profile.numLayers)) && Number(profile.numLayers) > 0)
           ? Number(profile.numLayers)
-          : (ggufMeta?.kvLayerCount || ggufMeta?.blockCount || 32);
+          : ggufMeta?.kvLayerCount
+          ?? (() => {
+            const arch = ggufMeta?.architecture;
+            const ratio = arch && HYBRID_ATTENTION_RATIO[arch];
+            return (ratio && ggufMeta?.blockCount)
+              ? Math.round(ggufMeta.blockCount * ratio)
+              : null;
+          })()
+          ?? ggufMeta?.blockCount
+          ?? 32;
 
         // Exact KV bytes-per-token-per-layer from GGUF GQA fields.
         // Formula: 2 (K+V) × kv_heads × head_dim × bytesPerElement
