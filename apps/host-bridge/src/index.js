@@ -19,6 +19,12 @@ const strictSmokeCheck = process.env.STRICT_SMOKE_CHECK === "true";
 const gpuBleedMaxDeltaMiB = Number(process.env.GPU_BLEED_MAX_DELTA_MIB || 256);
 const allowBleedOnOtherAssignedGpus = process.env.GPU_BLEED_ALLOW_OTHER_ASSIGNED === "true";
 const enforceGpuBleedInMultiInstance = process.env.GPU_BLEED_ENFORCE_MULTI_INSTANCE === "true";
+// Fraction of free VRAM to reserve as a safety buffer when auto-sizing ctx.
+// e.g. 0.20 = keep 20% of free VRAM free, use the other 80% for KV cache.
+const autoCtxVramBufferFraction = Math.min(0.9, Math.max(0, Number(process.env.AUTO_CTX_VRAM_BUFFER || 0.20)));
+// Bytes of KV cache consumed per context token per layer (fp16 K+V = 2*2 bytes per head).
+// This is a conservative heuristic; actual usage depends on model architecture & kv quant.
+const autoCtxBytesPerTokenPerLayer = Number(process.env.AUTO_CTX_BYTES_PER_TOKEN_PER_LAYER || 512);
 const llamaServerBinary = String(process.env.LLAMA_SERVER_BIN || "llama-server").trim() || "llama-server";
 
 if (!bridgeAuthEnabled) {
@@ -243,6 +249,38 @@ async function runCommand(command, args) {
 
 async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
   const profile = record?.profile || {};
+
+  // Auto-size --ctx-size when the user left contextLength unset.
+  // Query free VRAM across the assigned GPUs and compute a safe ceiling
+  // with autoCtxVramBufferFraction reserved as headroom.
+  const needsAutoCtx = !(Number.isInteger(Number(profile.contextLength)) && Number(profile.contextLength) > 0);
+  if (needsAutoCtx) {
+    const gpuIds = Array.isArray(profile.gpus) ? profile.gpus.map(String) : [];
+    if (gpuIds.length > 0) {
+      try {
+        const freeMibMap = await getGpuFreeMemoryMap();
+        // Probe llama-server for the model's layer count via --list-model-params if available,
+        // otherwise use the heuristic numLayers from the profile or fall back to 32 (common default).
+        const numLayers = (Number.isInteger(Number(profile.numLayers)) && Number(profile.numLayers) > 0)
+          ? Number(profile.numLayers)
+          : 32;
+        const autoCtx = computeAutoCtxSize(freeMibMap, gpuIds, numLayers);
+        if (autoCtx) {
+          profile.contextLength = autoCtx;
+          writeMeta(instanceId, "instance.auto_ctx", {
+            free_mib: Object.fromEntries(freeMibMap),
+            gpu_ids: gpuIds,
+            num_layers: numLayers,
+            buffer_fraction: autoCtxVramBufferFraction,
+            computed_ctx: autoCtx
+          });
+        }
+      } catch (err) {
+        console.warn(`[auto-ctx] failed to compute auto ctx-size for ${instanceId}: ${err.message}`);
+      }
+    }
+  }
+
   const args = resolveServerArgs(profile);
   let command = String(llamaServerBinary).trim() || "llama-server";
   let commandArgs = [...args];
@@ -429,6 +467,70 @@ async function getGpuMemoryUsageMap() {
   } catch {
     return null;
   }
+}
+
+// Returns a Map<gpuIndex:string, freeMiB:number> for all GPUs.
+// nvidia-smi on NVIDIA; rocm-smi JSON fallback for AMD. Returns null on failure.
+async function getGpuFreeMemoryMap() {
+  const nvResult = await runCommand("nvidia-smi", [
+    "--query-gpu=index,memory.free",
+    "--format=csv,noheader,nounits"
+  ]);
+
+  if (nvResult.ok) {
+    const map = new Map();
+    for (const line of String(nvResult.stdout || "").split("\n").map((l) => l.trim()).filter(Boolean)) {
+      const [indexRaw, memRaw] = line.split(",").map((x) => String(x || "").trim());
+      const mem = Number(memRaw);
+      if (indexRaw !== "" && Number.isFinite(mem) && mem >= 0) map.set(String(indexRaw), mem);
+    }
+    if (map.size > 0) return map;
+  }
+
+  // AMD fallback: rocm-smi reports total and used; derive free = total - used.
+  const rocmResult = await runCommand("rocm-smi", ["--showmeminfo", "vram", "--json"]);
+  if (!rocmResult.ok) return null;
+
+  try {
+    const parsed = JSON.parse(rocmResult.stdout);
+    const map = new Map();
+    for (const [cardKey, cardData] of Object.entries(parsed)) {
+      const idx = String(cardKey).replace(/^card/i, "");
+      const totalBytes = Number(cardData["VRAM Total Memory (B)"] ?? cardData["vram total memory"] ?? NaN);
+      const usedBytes = Number(cardData["VRAM Total Used Memory (B)"] ?? cardData["vram total used memory"] ?? NaN);
+      if (Number.isFinite(totalBytes) && Number.isFinite(usedBytes)) {
+        map.set(idx, Math.max(0, (totalBytes - usedBytes) / 1024 / 1024));
+      }
+    }
+    return map.size > 0 ? map : null;
+  } catch {
+    return null;
+  }
+}
+
+// Computes a safe --ctx-size from free VRAM across the assigned GPU set.
+// freeMibMap: Map<gpuIndex, freeMiB>; gpuIds: string[]; numLayers: number.
+// Returns null if inputs are insufficient (caller skips auto-sizing).
+function computeAutoCtxSize(freeMibMap, gpuIds, numLayers) {
+  if (!(freeMibMap instanceof Map) || freeMibMap.size === 0) return null;
+  if (!Array.isArray(gpuIds) || gpuIds.length === 0) return null;
+  if (!Number.isInteger(numLayers) || numLayers <= 0) return null;
+
+  // Sum free VRAM across the assigned GPUs.
+  let totalFreeMiB = 0;
+  for (const id of gpuIds) {
+    const mib = freeMibMap.get(String(id));
+    if (!Number.isFinite(mib)) return null; // unknown GPU — skip auto-sizing
+    totalFreeMiB += mib;
+  }
+
+  // Reserve buffer fraction, convert remaining to bytes.
+  const usableBytes = totalFreeMiB * (1 - autoCtxVramBufferFraction) * 1024 * 1024;
+  const ctxSize = Math.floor(usableBytes / (numLayers * autoCtxBytesPerTokenPerLayer));
+
+  // Clamp: minimum 512 tokens, round down to nearest 256 for clean numbers.
+  if (ctxSize < 512) return null;
+  return Math.floor(ctxSize / 256) * 256;
 }
 
 function activeAssignedGpuSet(excludeInstanceId = null) {
