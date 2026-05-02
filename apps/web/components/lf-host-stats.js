@@ -43,7 +43,7 @@ class LfHostStats extends HTMLElement {
     const coreSquares = Array.isArray(data.cpu_per_core) && data.cpu_per_core.length > 0
       ? data.cpu_per_core.map((pct, i) => {
           const c = pct >= 80 ? 'var(--danger)' : pct >= 40 ? '#ffbe5c' : pct >= 10 ? 'var(--accent)' : 'rgba(159,176,216,0.18)';
-          return `<span class="hs-core-sq" style="background:${c}" title="Core ${i}: ${pct}%"></span>`;
+          return `<span class="hs-core-sq" style="background:${c}" title="CPU Core ${i}: ${pct}%"></span>`;
         }).join('')
       : '';
 

@@ -122,11 +122,28 @@ function renderInstanceStatsFooter() {
   const cpuColor = cpuPct >= 90 ? "var(--danger)" : cpuPct >= 60 ? "#ffbe5c" : "var(--accent)";
   const load1 = d.loadavg ? d.loadavg[0].toFixed(2) : "\u2014";
   const coreSquares = Array.isArray(d.cpu_per_core) && d.cpu_per_core.length > 0
-    ? d.cpu_per_core.map((pct) => {
+    ? d.cpu_per_core.map((pct, i) => {
         const c = pct >= 80 ? 'var(--danger)' : pct >= 40 ? '#ffbe5c' : pct >= 10 ? 'var(--accent)' : 'rgba(159,176,216,0.18)';
-        return `<span class="hs-core-sq" style="background:${c}" title="${pct}%"></span>`;
+        return `<span class="hs-core-sq" style="background:${c}" title="CPU Core ${i}: ${pct}%"></span>`;
       }).join('')
     : '';
+  const gpus = Array.isArray(store.get('gpuHardware')?.data) ? store.get('gpuHardware').data : [];
+  let gpuHtml = '';
+  if (gpus.length > 0) {
+    const totalVramMib = gpus.reduce((s, g) => s + (g.memory_total_mib || 0), 0);
+    const usedVramMib  = gpus.reduce((s, g) => s + (g.memory_used_mib  || 0), 0);
+    const vramPct = totalVramMib > 0 ? Math.round((usedVramMib / totalVramMib) * 100) : 0;
+    const vramUsedGib  = (usedVramMib  / 1024).toFixed(1);
+    const vramTotalGib = (totalVramMib / 1024).toFixed(1);
+    const vramColor = vramPct >= 90 ? 'var(--danger)' : vramPct >= 70 ? '#ffbe5c' : 'var(--accent)';
+    gpuHtml = `<span class="hsf-sep">&middot;</span>
+          <span class="hsf-item">
+            <span class="hsf-name">GPU</span>
+            <span class="hsf-muted">${gpus.length}&times;</span>
+            <div class="hsf-bar-wrap"><div class="hsf-bar-fill" style="width:${vramPct}%;background:${vramColor}"></div></div>
+            <span class="hsf-val">${vramUsedGib}/${vramTotalGib}&thinsp;GiB</span>
+          </span>`;
+  }
   tfoot.innerHTML = `
     <tr class="host-stats-trow">
       <td colspan="6">
@@ -137,6 +154,7 @@ function renderInstanceStatsFooter() {
             <div class="hsf-bar-wrap"><div class="hsf-bar-fill" style="width:${cpuPct}%;background:${cpuColor}"></div></div>
             <span class="hsf-val">${cpuPct}%</span>
             <span class="hsf-muted">avg &thinsp; load&thinsp;${load1}</span>
+            ${coreSquares ? `<div class="hs-cores" style="max-width:none">${coreSquares}</div>` : ''}
           </span>
           <span class="hsf-sep">&middot;</span>
           <span class="hsf-item">
@@ -145,7 +163,7 @@ function renderInstanceStatsFooter() {
             <span class="hsf-val">${memUsedGib}/${memTotalGib}&thinsp;GiB</span>
             <span class="hsf-muted">${memPct}%</span>
           </span>
-          ${coreSquares ? `<span class="hsf-sep">&middot;</span><div class="hs-cores" style="max-width:none">${coreSquares}</div>` : ''}
+          ${gpuHtml}
         </div>
       </td>
     </tr>`;
@@ -348,6 +366,7 @@ class LfInstancesPanel extends HTMLElement {
     initInstancesEventDelegation();
     store.subscribe('instances', renderInstanceData);
     store.subscribe('hostStats', () => renderInstanceStatsFooter());
+    store.subscribe('gpuHardware', () => renderInstanceStatsFooter());
   }
 
   _wireEvents() {
