@@ -313,3 +313,153 @@ describe("GET /metrics", () => {
     expect(res.status).toBe(401);
   });
 });
+
+// ---------------------------------------------------------------------------
+// System info
+// ---------------------------------------------------------------------------
+
+describe("GET /v1/system/info", () => {
+  it("returns 200 with platform and arch (bridge unavailable — fallback path)", async () => {
+    const res = await fetch(`${testBase}/v1/system/info`, { headers: auth });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(typeof body.platform).toBe("string");
+    expect(typeof body.arch).toBe("string");
+  });
+
+  it("always includes a llamaCppLatest key (null when no cached check yet)", async () => {
+    const res = await fetch(`${testBase}/v1/system/info`, { headers: auth });
+    const body = await res.json();
+    expect("llamaCppLatest" in body).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Local models
+// ---------------------------------------------------------------------------
+
+describe("GET /v1/local-models", () => {
+  it("returns 200 with a data array", async () => {
+    const res = await fetch(`${testBase}/v1/local-models`, { headers: auth });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body.data)).toBe(true);
+  });
+
+  it("each model entry has name, size, and downloading fields", async () => {
+    const res = await fetch(`${testBase}/v1/local-models`, { headers: auth });
+    const { data } = await res.json();
+    for (const m of data) {
+      expect(typeof m.name).toBe("string");
+      expect("size" in m).toBe(true);
+      expect(typeof m.downloading).toBe("boolean");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Settings — security
+// ---------------------------------------------------------------------------
+
+describe("GET /v1/settings/security", () => {
+  it("returns the current security settings object", async () => {
+    const res = await fetch(`${testBase}/v1/settings/security`, { headers: auth });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveProperty("api");
+    expect(body).toHaveProperty("tls");
+    expect(body).toHaveProperty("auth");
+  });
+});
+
+describe("PUT /v1/settings/security", () => {
+  it("can update auth.sessionTtlMinutes and reflects change immediately", async () => {
+    const res = await fetch(`${testBase}/v1/settings/security`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify({ auth: { sessionTtlMinutes: 120 } }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.auth.sessionTtlMinutes).toBe(120);
+  });
+
+  it("can set api.requireApiKey (API_AUTH_TOKEN is configured in test env)", async () => {
+    const res = await fetch(`${testBase}/v1/settings/security`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify({ api: { requireApiKey: true } }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.api.requireApiKey).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Config export / status / import
+// ---------------------------------------------------------------------------
+
+describe("GET /v1/config/status", () => {
+  it("returns a 64-char SHA-256 currentExportHash", async () => {
+    const res = await fetch(`${testBase}/v1/config/status`, { headers: auth });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(typeof body.currentExportHash).toBe("string");
+    expect(body.currentExportHash).toHaveLength(64);
+  });
+});
+
+describe("GET /v1/config/export.yaml", () => {
+  it("returns a YAML content-type response", async () => {
+    const res = await fetch(`${testBase}/v1/config/export.yaml`, { headers: auth });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toMatch(/yaml/i);
+  });
+
+  it("YAML body contains a version field", async () => {
+    const res = await fetch(`${testBase}/v1/config/export.yaml`, { headers: auth });
+    const text = await res.text();
+    expect(text).toMatch(/^version:/m);
+  });
+});
+
+describe("POST /v1/config/import.yaml", () => {
+  const yamlHeaders = { ...auth, "Content-Type": "application/yaml" };
+
+  it("returns 400 when body is empty", async () => {
+    const res = await fetch(`${testBase}/v1/config/import.yaml`, {
+      method: "POST",
+      headers: yamlHeaders,
+      body: "   ",
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/yaml body is required/i);
+  });
+
+  it("returns 400 for invalid YAML syntax", async () => {
+    const res = await fetch(`${testBase}/v1/config/import.yaml`, {
+      method: "POST",
+      headers: yamlHeaders,
+      body: "{ unclosed: [bracket",
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/invalid yaml/i);
+  });
+
+  it("returns success:true for a valid dry-run import", async () => {
+    const res = await fetch(`${testBase}/v1/config/import.yaml?dryRun=true`, {
+      method: "POST",
+      headers: yamlHeaders,
+      body: "version: '1'\nprofiles: []\nusers: []\n",
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.dryRun).toBe(true);
+    expect(body.applied).toBe(false);
+    expect(typeof body.summary).toBe("object");
+  });
+});
