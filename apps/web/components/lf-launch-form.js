@@ -149,10 +149,11 @@ export async function loadModelList(selectElementId) {
     // Bucket models by their source tag (or "local" if none)
     const groups = new Map();
     for (const model of models) {
+      if (model.mmproj) continue;
       const raw = model.name || model.id;
       const tagMatch = raw.match(/^\[([^\]]+)\]\s*(.+)$/);
       const tag = tagMatch ? tagMatch[1].toLowerCase() : "local";
-      const filePart = (tagMatch ? tagMatch[2] : raw).split(/[\/\\]/).pop();
+      const filePart = tagMatch ? tagMatch[2] : raw;
       if (!groups.has(tag)) groups.set(tag, []);
       groups.get(tag).push({ model, filePart });
     }
@@ -168,7 +169,12 @@ export async function loadModelList(selectElementId) {
       for (const { model, filePart } of items) {
         const option = document.createElement("option");
         option.value = model.id;
-        option.textContent = filePart + fmtSize(model.size);
+        if (model.downloading) {
+          option.textContent = filePart + " (downloading…)";
+          option.disabled = true;
+        } else {
+          option.textContent = filePart + fmtSize(model.size);
+        }
         option.title = model.id;
         group.appendChild(option);
       }
@@ -176,7 +182,9 @@ export async function loadModelList(selectElementId) {
     }
 
     if (currentValue) select.value = currentValue;
-    toast(`Loaded ${models.length} models (${sourceLabel})`);
+    const readyCount = models.filter(m => !m.downloading && !m.mmproj).length;
+    const dlCount = models.filter(m => m.downloading && !m.mmproj).length;
+    toast(`Loaded ${readyCount} model${readyCount !== 1 ? 's' : ''}${dlCount ? ` (+${dlCount} downloading)` : ''} (${sourceLabel})`);
   }
 
   try {

@@ -43,19 +43,24 @@ router.get("/local-models", (_req, res) => {
         const name = tagPrefix ? `[${tagPrefix}] ${rel}` : rel;
         const shards = shardMatch ? parseInt(shardMatch[2], 10) : null;
         let size = null;
+        let downloading = false;
         try {
           if (shards) {
             let total = 0;
             for (let i = 1; i <= shards; i++) {
               const shardPath = fullPath.replace(/-\d{5}-of-/i, `-${String(i).padStart(5, "0")}-of-`);
+              if (!fs.existsSync(shardPath)) downloading = true;
               try { total += fs.statSync(shardPath).size; } catch { /* skip missing shard */ }
             }
             size = total || null;
           } else {
+            const partPath = path.join(path.dirname(fullPath), `downloading_${entry.name}.part`);
+            if (fs.existsSync(partPath)) downloading = true;
             size = fs.statSync(fullPath).size;
           }
         } catch { /* ignore */ }
-        results.push({ id: fullPath, name, shards, size });
+        const mmproj = /(?:^|[-_\/\\])mmproj[-_]/i.test(entry.name);
+        results.push({ id: fullPath, name, shards, size, downloading, mmproj });
       }
     }
   }

@@ -329,7 +329,9 @@ async function loadLocalModels() {
   try {
     const res = await api("/v1/local-models");
     const models = res.data || [];
-    if (header) header.textContent = `Local Models (${models.length})`;
+    const readyCount = models.filter(m => !m.downloading && !m.mmproj).length;
+    const dlCount = models.filter(m => m.downloading && !m.mmproj).length;
+    if (header) header.textContent = `Local Models (${readyCount}${dlCount ? `, ${dlCount} downloading` : ``})`;
     if (!models.length) {
       list.innerHTML = '<span class="hub-empty">No GGUF files found in scanned directories.</span>';
       return;
