@@ -415,11 +415,12 @@ async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
     if (text.includes("couldn't bind HTTP server socket")) {
       record.lastError = `Port ${record.profile?.port} is already in use`;
     }
-    // Cache the real build tag (e.g. "b760272") from "build_info: b1-b760272" in stderr.
-    // --version only outputs "1" on custom builds; this gives us the actual build number.
+    // Cache the full build tag from "build_info: b1-b760272" in stderr.
+    // --version only outputs "1" on custom builds; this gives us the actual version string.
+    // Capture the full token after "build_info:", e.g. "b1-b760272" or "b4123".
     if (!llamaServerBuildTag) {
-      const biMatch = text.match(/build_info:.*?(b\d{4,})/);
-      if (biMatch) llamaServerBuildTag = biMatch[1];
+      const biMatch = text.match(/build_info:\s*(\S+)/);
+      if (biMatch) llamaServerBuildTag = biMatch[1].slice(0, 40);
     }
   });
 
@@ -1413,10 +1414,10 @@ app.get("/v1/info", auth, async (_req, res) => {
     await new Promise((resolve) => {
       execFile(llamaServerBinary, ["--version"], { timeout: 4000 }, (_err, stdout, stderr) => {
         const raw = ((stdout || "") + "\n" + (stderr || "")).trim();
-        const match = raw.match(/build_info:.*?(b\d{4,})/) || raw.match(/version:\s*(\S+)/) || raw.match(/build\s+(\d+)/);
+        const match = raw.match(/build_info:\s*(\S+)/) || raw.match(/version:\s*(\S+)/) || raw.match(/build\s+(\d+)/);
         if (match) info.llamaServerVersion = match[1].slice(0, 80);
-        // If --version only returned a plain number (e.g. "1"), prefer the build
-        // tag we've seen in instance stderr (e.g. "b760272" from "build_info:").
+        // If --version only returned a plain number (e.g. "1"), prefer the cached
+        // full build tag seen in instance stderr (e.g. "b1-b760272").
         if (llamaServerBuildTag && /^\d+$/.test(info.llamaServerVersion || "")) {
           info.llamaServerVersion = llamaServerBuildTag;
         }

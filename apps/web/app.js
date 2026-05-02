@@ -171,30 +171,30 @@ async function loadAboutInfo() {
         const ver = sys.llamaServerVersion;
         if (ver) {
           const a = document.createElement("a");
-          // Parse build number from "b760272" (b-prefixed), "760272" (plain numeric), or "1" (unknown).
-          const bPrefixMatch = ver.match(/^b(\d{4,})$/);
-          const buildNum = bPrefixMatch ? Number(bPrefixMatch[1]) : /^\d+$/.test(ver) ? Number(ver) : NaN;
-          const releaseTag = buildNum >= 1000 ? (ver.startsWith("b") ? ver : `b${ver}`) : null;
-          a.href = releaseTag
-            ? `https://github.com/ggml-org/llama.cpp/releases/tag/${releaseTag}`
+          // Standard release: "b4123" (b + 4+ digits only).
+          // Custom build:     "b1-b760272", "1", or any other format.
+          const standardMatch = ver.match(/^b(\d{4,})$/);
+          const buildNum = standardMatch ? Number(standardMatch[1]) : NaN;
+          const isStandardRelease = buildNum >= 1000;
+          a.href = isStandardRelease
+            ? `https://github.com/ggml-org/llama.cpp/releases/tag/${ver}`
             : `https://github.com/ggml-org/llama.cpp/releases`;
           a.target = "_blank";
           a.rel = "noopener noreferrer";
-          a.textContent = buildNum >= 1000 ? (ver.startsWith("b") ? ver : `build ${ver}`) : ver;
+          a.textContent = isStandardRelease ? ver : ver;
           llamaEl.textContent = "";
           llamaEl.appendChild(a);
           // Show update badge if installed build is behind latest, or if we
           // can't parse the installed version as a standard release build number.
           const latest = sys.llamaCppLatest;
           if (latest?.latestBuild && latest.latestTag) {
-            const isStandardBuild = buildNum >= 1000;
-            const needsUpdate = !isStandardBuild || latest.latestBuild > buildNum;
+            const needsUpdate = !isStandardRelease || latest.latestBuild > buildNum;
             if (needsUpdate) {
               const badge = document.createElement("a");
               badge.href = `https://github.com/ggml-org/llama.cpp/releases/tag/${latest.latestTag}`;
               badge.target = "_blank";
               badge.rel = "noopener noreferrer";
-              badge.textContent = isStandardBuild
+              badge.textContent = isStandardRelease
                 ? `update available (b${latest.latestBuild})`
                 : `latest: b${latest.latestBuild}`;
               badge.style.cssText = "margin-left:0.5em;font-size:0.78em;background:var(--warn,#b45309);color:#fff;padding:1px 6px;border-radius:4px;text-decoration:none;vertical-align:middle";
