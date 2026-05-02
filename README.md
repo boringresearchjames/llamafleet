@@ -285,6 +285,10 @@ openssl rand -hex 32
 - **No per-instance auth** — Auth is enforced at the proxy layer via the global `API_AUTH_TOKEN`. There is no per-instance key.
 - **No speculative decoding or prefix caching** — Pass the relevant `llama-server` flags via `runtimeArgs` if the binary supports them.
 
+## Built with AI assistance
+
+Largely AI-generated (GitHub Copilot) with human direction on architecture and domain decisions. Released as-is under MIT — fork it, use it, improve it.
+
 ## License
 
 MIT
