@@ -127,6 +127,33 @@ async function pollInstanceHealth() {
 
 setInterval(() => { void pollInstanceHealth(); }, HEALTH_POLL_INTERVAL_MS);
 
+// ── llama.cpp update check ─────────────────────────────────────────────────
+// Fetch the latest llama.cpp release from GitHub once at startup. Result is
+// cached in-process and served through /v1/system/info so the frontend can
+// show a badge when the installed build is behind.
+export let llamaCppLatest = null; // { latestBuild, latestTag, checkedAt }
+
+async function checkLlamaCppUpdate() {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(
+      "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest",
+      { headers: { "User-Agent": "llamafleet-update-check" }, signal: controller.signal }
+    );
+    clearTimeout(timer);
+    if (!res.ok) return;
+    const data = await res.json();
+    const tag = data.tag_name || "";
+    const buildMatch = tag.match(/^b(\d+)$/);
+    llamaCppLatest = {
+      latestBuild: buildMatch ? Number(buildMatch[1]) : null,
+      latestTag: tag,
+      checkedAt: new Date().toISOString()
+    };
+  } catch { /* not critical — leave null */ }
+}
+
 // Sweep expired auth sessions hourly. Without this, sessions accumulated up to
 // the slice(-1000) cap and stayed valid until pushed off by new logins.
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
@@ -139,6 +166,7 @@ setInterval(() => {
 cleanupSessions();
 
 restorePartialDownloads();
+void checkLlamaCppUpdate();
 
 app.listen(port, () => {
   console.log(`lmlaunch api+web listening on ${port}`);

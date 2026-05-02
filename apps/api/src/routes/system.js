@@ -4,6 +4,7 @@ import { requireAdminToken } from "../lib/auth.js";
 import { audit } from "../lib/audit.js";
 import { now } from "../lib/utils.js";
 import { bridgeFetch, localApi } from "../lib/bridge.js";
+import { llamaCppLatest } from "../index.js";
 
 const router = express.Router();
 
@@ -30,9 +31,9 @@ router.get("/host-stats", async (_req, res) => {
 router.get("/system/info", async (_req, res) => {
   try {
     const result = await bridgeFetch("GET", "/v1/info");
-    res.json(result);
+    res.json({ ...result, llamaCppLatest });
   } catch {
-    res.json({ platform: process.platform, arch: process.arch, llamaServerBin: null, llamaServerVersion: null });
+    res.json({ platform: process.platform, arch: process.arch, llamaServerBin: null, llamaServerVersion: null, llamaCppLatest });
   }
 });
 

@@ -7,7 +7,6 @@ import { store } from './store.js';
 import './components/lf-state-chip.js';
 import './components/lf-activity-chip.js';
 import './components/lf-toast.js';
-import './components/lf-host-stats.js';
 import './components/lf-routing-map.js';
 import './components/lf-launch-form.js';
 import './components/lf-instances-panel.js';
@@ -172,7 +171,6 @@ async function loadAboutInfo() {
         const ver = sys.llamaServerVersion;
         if (ver) {
           const a = document.createElement("a");
-          // Only deep-link to a specific release if it looks like a real build number (>= 1000)
           const buildNum = /^\d+$/.test(ver) ? Number(ver) : NaN;
           a.href = buildNum >= 1000
             ? `https://github.com/ggml-org/llama.cpp/releases/tag/b${ver}`
@@ -182,6 +180,17 @@ async function loadAboutInfo() {
           a.textContent = buildNum >= 1000 ? `build ${ver}` : ver;
           llamaEl.textContent = "";
           llamaEl.appendChild(a);
+          // Show update badge if installed build is behind latest
+          const latest = sys.llamaCppLatest;
+          if (latest?.latestBuild && buildNum >= 1000 && latest.latestBuild > buildNum) {
+            const badge = document.createElement("a");
+            badge.href = `https://github.com/ggml-org/llama.cpp/releases/tag/${latest.latestTag}`;
+            badge.target = "_blank";
+            badge.rel = "noopener noreferrer";
+            badge.textContent = `update available (b${latest.latestBuild})`;
+            badge.style.cssText = "margin-left:0.5em;font-size:0.78em;background:var(--warn,#b45309);color:#fff;padding:1px 6px;border-radius:4px;text-decoration:none;vertical-align:middle";
+            llamaEl.appendChild(badge);
+          }
         } else {
           llamaEl.textContent = "—";
         }
