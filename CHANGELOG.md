@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.6.0] — 2026-05-02
+
+### Added
+- **llama.cpp update check** — API fetches the latest llama.cpp release tag on startup and shows an update badge on the About page when a newer build is available.
+- **GPU VRAM bar in instances footer** — aggregate used/total VRAM bar (with colour thresholds) added alongside CPU and RAM in the instances table footer; updates live as GPU state changes.
+- **GPU count and total VRAM bar in host stats strip** — compact GPU count and aggregate VRAM bar in the host stats strip above the instances table.
+
+### Fixed
+- **GGUF tokenizer buffer exhaustion** — large models (Qwen3, Llama3 70B+) embed 150K+ tokenizer strings in GGUF metadata, exhausting the 2 MB read buffer before model parameter fields were reached. Fixed by returning early once all required fields are found and catching `RangeError` mid-array to preserve partial results.
+- **llama.cpp build tag display** — surfaces the real build tag from `llama-server` stderr (`b760272`, `b1-b760272` etc.) instead of showing version `1`. Seeds from existing log files at startup so the tag is correct before the first inference request.
+- **Update badge for non-standard build tags** — custom/self-compiled builds (e.g. `b1-b760272`) now always show the latest release badge rather than silently failing the version comparison.
+- **Port-in-use error reporting** — `llama-server` bind failures (`couldn't bind HTTP server socket`) are now captured and surfaced as a human-readable `lastError` on the instance.
+- **Unhealthy instance restart** — bridge no longer returns 409 when restarting an instance in `unhealthy` state.
+- **Model list accuracy** — partial downloads, mmproj sidecars, and multi-shard naming corrections in the local model scanner.
+- **Host stats render ordering** — `gpuHardware` data is now fetched before the first render to avoid a blank GPU bar on initial load.
+
+### Tests
+- Expanded test suite from 44 → 69 tests across 4 files: `system/info`, `local-models`, `settings` (security + config import/export), and full `instance-configs` CRUD.
+
+### Docs
+- Binary download table updated to reflect current llama.cpp release asset names (Linux CUDA requires building from source; no pre-built Ubuntu CUDA packages in recent releases).
+- Screenshots refreshed to show GPU VRAM footer, active instances, routing map, and live download.
+
+---
+
 ## [0.5.0] — 2026-04-30
 
 ### Added
