@@ -76,9 +76,8 @@
 
       <section class="card about-card span-6">
         <h2>Background</h2>
-        <p>LlamaFleet started as a practical fix for running a fleet of V100s with LM Studio: VRAM was bleeding between GPUs after model swaps, processes crashed under sustained load, and there was no way to pin a model to specific cards or isolate instances from each other.</p>
-        <p>No existing tool &mdash; GUI or headless &mdash; managed independent <code>llama-server</code> processes per GPU subset from a single control plane. LlamaFleet is that tool.</p>
-        <p>The GPU isolation problem is particularly relevant for pre-Ampere hardware. vLLM and SGLang require CUDA 11+ with Ampere-class features; older V100s and GTX 10/20 series cards either hit capability gaps or produce incorrect results. <code>llama.cpp</code> supports this hardware generation well &mdash; LlamaFleet wraps the operational complexity around it.</p>
+        <p>LlamaFleet started as a practical fix for running a fleet of V100s with LM Studio: VRAM was bleeding between GPUs after model swaps, processes crashed under sustained load, and there was no way to pin a model to specific cards or isolate instances. No existing tool &mdash; GUI or headless &mdash; managed independent <code>llama-server</code> processes per GPU subset from a single control plane. LlamaFleet is that tool.</p>
+        <p>The GPU isolation problem is particularly relevant for pre-Ampere hardware. vLLM and SGLang require CUDA 11+ with Ampere-class features; older V100s and GTX 10/20 series cards either hit capability gaps or produce incorrect results. <code>llama.cpp</code> supports this hardware generation well, but running multiple instances with correct <code>CUDA_VISIBLE_DEVICES</code> per process, log management, readiness polling, and crash recovery is operationally tedious. LlamaFleet wraps all of that.</p>
       </section>
 
       <section class="card about-card span-6">
