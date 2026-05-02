@@ -1439,6 +1439,22 @@ app.get("/v1/instances/:id/logs", (req, res) => {
   });
 });
 
+// Pre-populate llamaServerBuildTag from existing log files so /v1/info returns
+// the real version string immediately after a restart (before any instance starts).
+try {
+  const logFiles = fs.readdirSync(logsDir).filter((f) => f.endsWith(".log"));
+  // Sort newest-first by mtime so we get the most recent build tag.
+  const sorted = logFiles
+    .map((f) => { try { return { f, mtime: fs.statSync(path.join(logsDir, f)).mtimeMs }; } catch { return null; } })
+    .filter(Boolean)
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const { f } of sorted) {
+    const content = fs.readFileSync(path.join(logsDir, f), "utf8");
+    const m = content.match(/build_info:\s*(\S+)/);
+    if (m) { llamaServerBuildTag = m[1].slice(0, 40); break; }
+  }
+} catch { /* optional, non-critical */ }
+
 const server = app.listen(port, () => {
   console.log(`lmlaunch bridge listening on ${port}`);
 });
