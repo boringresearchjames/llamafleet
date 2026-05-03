@@ -1150,7 +1150,7 @@ app.get("/v1/gpus", (_req, res) => {
   execFile(
     "nvidia-smi",
     [
-      "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu,clocks.current.graphics,clocks.current.memory,power.draw",
+      "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu,clocks.current.graphics,clocks.current.memory,power.draw,pcie.link.width.current,pcie.link.width.max,pcie.link.gen.current,pcie.link.gen.max",
       "--format=csv,noheader,nounits"
     ],
     (nvError, nvStdout) => {
@@ -1160,7 +1160,7 @@ app.get("/v1/gpus", (_req, res) => {
           .split("\n")
           .filter(Boolean)
           .map((line) => {
-            const [index, name, total, used, util, temp, graphicsClock, memoryClock, powerDraw] = line.split(",").map((x) => x.trim());
+            const [index, name, total, used, util, temp, graphicsClock, memoryClock, powerDraw, pcieLinkWidthCurrent, pcieLinkWidthMax, pcieLinkGenCurrent, pcieLinkGenMax] = line.split(",").map((x) => x.trim());
             const parseMaybeNumber = (value) => { const num = Number(value); return Number.isFinite(num) ? num : null; };
             return {
               id: index,
@@ -1171,7 +1171,11 @@ app.get("/v1/gpus", (_req, res) => {
               temperature_c: parseMaybeNumber(temp),
               graphics_clock_mhz: parseMaybeNumber(graphicsClock),
               memory_clock_mhz: parseMaybeNumber(memoryClock),
-              power_draw_w: parseMaybeNumber(powerDraw)
+              power_draw_w: parseMaybeNumber(powerDraw),
+              pcie_width_current: parseMaybeNumber(pcieLinkWidthCurrent),
+              pcie_width_max: parseMaybeNumber(pcieLinkWidthMax),
+              pcie_gen_current: parseMaybeNumber(pcieLinkGenCurrent),
+              pcie_gen_max: parseMaybeNumber(pcieLinkGenMax)
             };
           });
         return res.json({ data, diagnostics: { runtimeDetected: true, detail: "nvidia-smi is available to the bridge service" } });

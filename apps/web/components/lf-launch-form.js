@@ -229,7 +229,9 @@ function renderGpuSelect({ data = [], warning, diagnostics } = {}) {
     option.value = gpu.id;
     const temp = gpu.temperature_c ?? "n/a";
     const util = gpu.utilization_percent ?? "n/a";
-    option.textContent = `GPU ${gpu.id}: ${gpu.name} (${gpu.memory_total_mib} MiB, util ${util}%, ${temp}C)`;
+    const pcie = (gpu.pcie_width_current != null && gpu.pcie_gen_current != null)
+      ? `, PCIe x${gpu.pcie_width_current} Gen${gpu.pcie_gen_current}` : "";
+    option.textContent = `GPU ${gpu.id}: ${gpu.name} (${gpu.memory_total_mib} MiB, util ${util}%, ${temp}C${pcie})`;
     if (currentSelected.includes(gpu.id)) option.selected = true;
     gpusSelect.appendChild(option);
   });
