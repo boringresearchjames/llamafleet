@@ -45,7 +45,6 @@ All four tools run `llama.cpp` under the hood. The differences are in the ops mo
 | Browser dashboard | ✅ | ✅ React UI | ❌ (3rd-party only) | ❌ Desktop GUI only |
 | OpenAI-compatible REST API | ✅ | ✅ | ✅ | ✅ |
 | Headless server / SSH box / systemd | ✅ Native processes, systemd service | ✅ Via Docker | ✅ | ❌ Desktop app |
-| No Docker required | ✅ | ❌ Docker-first | ✅ | ✅ |
 | Multi-user auth / RBAC | ❌ Single shared bearer token | ✅ | ❌ No auth | ❌ No auth |
 
 **The short version:** [LocalAI](https://github.com/mudler/LocalAI) is the broadest alternative — it wraps 36+ backends (llama.cpp, Whisper, Stable Diffusion, and more) and includes RBAC and distributed mode. If you need that breadth, LocalAI is the right tool. LlamaFleet does one thing: it treats each `llama-server` process as an independently-controlled unit — its own GPUs, its own queue, its own crash domain — and routes load across them intelligently. If you need fine-grained per-process GPU control, heterogeneous compute pools, and direct `llama-server` flag access without Docker, LlamaFleet is more direct. If you want a one-command model registry on your laptop, Ollama is simpler. If you want a polished desktop GUI for trying models, LM Studio is hard to beat.
