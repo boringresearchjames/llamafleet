@@ -121,7 +121,8 @@ router.post("/hub/download", requireAdminToken, async (req, res) => {
     const safeFilename = path.basename(normalizedFilename);
 
     const home = os.homedir();
-    const destDir = path.resolve(modelsDir.replace(/^~/, home));
+    // Place the file under lmfleet/<owner>/<modelname>/ so multi-file models stay together
+    const destDir = path.resolve(path.join(modelsDir.replace(/^~/, home), "lmfleet", repoId));
     fs.mkdirSync(destDir, { recursive: true });
     const destPath = path.join(destDir, safeFilename);
     const partPath = destPath + ".part";

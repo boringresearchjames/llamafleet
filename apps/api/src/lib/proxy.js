@@ -80,6 +80,288 @@ export function proxyRequestHeaders(req) {
 }
 
 // ---------------------------------------------------------------------------
+// MiniMax XML tool call transformation
+// ---------------------------------------------------------------------------
+// MiniMax models output tool calls as <minimax:tool_call><invoke name="...">
+// <parameter name="...">value</parameter></invoke></minimax:tool_call> XML.
+// llama-server's peg-native chat format parser sometimes fails to convert this
+// to OpenAI tool_calls format, causing clients to receive raw XML in content.
+// On the next turn the client sends the XML back as history and llama-server
+// rejects it ("Failed to parse input at pos N: <minimax:tool_call>").
+// These helpers detect and convert the XML to OpenAI tool_calls format in the
+// proxy layer so clients always see a clean OpenAI-compatible response.
+
+/**
+ * Parse <minimax:tool_call> XML blocks from an assistant content string.
+ * Returns { textBefore, toolCalls } or null if no tool calls are present.
+ */
+function parseMinimaxXmlToolCalls(content) {
+  if (!content || !content.includes("<minimax:tool_call>")) return null;
+  const tagStart = content.indexOf("<minimax:tool_call>");
+  const textBefore = content.slice(0, tagStart).trim() || null;
+  const toolCalls = [];
+  const invokeRe = /<invoke\s+name="([^"]+)">([\s\S]*?)<\/invoke>/g;
+  let m;
+  while ((m = invokeRe.exec(content)) !== null) {
+    const fnName = m[1];
+    const paramsBlock = m[2];
+    const params = {};
+    const paramRe = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/g;
+    let p;
+    while ((p = paramRe.exec(paramsBlock)) !== null) {
+      params[p[1]] = p[2];
+    }
+    toolCalls.push({
+      id: `call_${Math.random().toString(36).slice(2, 11)}`,
+      type: "function",
+      function: { name: fnName, arguments: JSON.stringify(params) }
+    });
+  }
+  return toolCalls.length > 0 ? { textBefore, toolCalls } : null;
+}
+
+/**
+ * Transform a parsed non-streaming chat completion response object.
+ * Converts any <minimax:tool_call> XML in choice content to tool_calls.
+ */
+function transformMinimaxNonStreaming(parsed) {
+  if (!parsed || !Array.isArray(parsed.choices)) return parsed;
+  let changed = false;
+  const choices = parsed.choices.map((choice) => {
+    const msg = choice?.message;
+    if (!msg) return choice;
+    // Check both content and reasoning_content for XML.
+    const contentHasXml = typeof msg.content === "string" && msg.content.includes("<minimax:tool_call>");
+    const reasoningHasXml = typeof msg.reasoning_content === "string" && msg.reasoning_content.includes("<minimax:tool_call>");
+    if (!contentHasXml && !reasoningHasXml) return choice;
+    const xmlSource = contentHasXml ? msg.content : msg.reasoning_content;
+    const parsed2 = parseMinimaxXmlToolCalls(xmlSource);
+    if (!parsed2) return choice;
+    changed = true;
+    const newMsg = { ...msg, tool_calls: parsed2.toolCalls };
+    if (contentHasXml) {
+      newMsg.content = parsed2.textBefore;
+    } else {
+      // XML was in reasoning_content — strip it, keep content as-is
+      const xmlStart = msg.reasoning_content.indexOf("<minimax:tool_call>");
+      const cleanedReasoning = xmlStart > 0 ? msg.reasoning_content.slice(0, xmlStart).trim() : null;
+      if (cleanedReasoning) newMsg.reasoning_content = cleanedReasoning;
+      else delete newMsg.reasoning_content;
+    }
+    return { ...choice, message: newMsg, finish_reason: "tool_calls" };
+  });
+  return changed ? { ...parsed, choices } : parsed;
+}
+
+/**
+ * Try to recover MiniMax tool-call XML embedded in a llama-server "Failed to
+ * parse input at pos N: <minimax:tool_call>..." error.  When --jinja is in
+ * use, llama-server's chat-template post-parser sometimes rejects the model's
+ * own output (raw XML) and returns this error instead of completing the
+ * response.  We extract the XML payload and synthesize a successful chat
+ * completion containing the parsed tool_calls.
+ *
+ * Input: parsed JSON error body from upstream (object).
+ * Output: synthesized chat-completion object on success, or null if the error
+ *   does not match.
+ */
+function recoverFromMinimaxParseError(parsed, modelName) {
+  const message = parsed?.error?.message || parsed?.message || "";
+  if (typeof message !== "string") return null;
+  if (!message.includes("<minimax:tool_call>")) return null;
+  const xmlStart = message.indexOf("<minimax:tool_call>");
+  const xmlPayload = message.slice(xmlStart);
+  const parsed2 = parseMinimaxXmlToolCalls(xmlPayload);
+  if (!parsed2 || parsed2.toolCalls.length === 0) return null;
+  return {
+    id: `chatcmpl-recover-${Math.random().toString(36).slice(2, 11)}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: modelName || "unknown",
+    choices: [{
+      index: 0,
+      message: {
+        role: "assistant",
+        content: parsed2.textBefore || null,
+        tool_calls: parsed2.toolCalls
+      },
+      finish_reason: "tool_calls",
+      logprobs: null
+    }],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+  };
+}
+
+/**
+ * Build an SSE stream string for a synthesized chat completion (used when we
+ * recover from a parse error in streaming mode).
+ */
+function synthesizeMinimaxSseFromCompletion(completion) {
+  const base = { id: completion.id, object: "chat.completion.chunk", created: completion.created, model: completion.model };
+  const choiceBase = { index: 0, logprobs: null };
+  const events = [];
+  const choice = completion.choices[0];
+  const textBefore = choice?.message?.content;
+  const toolCalls = choice?.message?.tool_calls || [];
+  if (textBefore) {
+    events.push({ ...base, choices: [{ ...choiceBase, delta: { role: "assistant", content: textBefore }, finish_reason: null }] });
+  }
+  toolCalls.forEach((tc, i) => {
+    events.push({ ...base, choices: [{ ...choiceBase, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: "" } }] }, finish_reason: null }] });
+    events.push({ ...base, choices: [{ ...choiceBase, delta: { tool_calls: [{ index: i, function: { arguments: tc.function.arguments } }] }, finish_reason: null }] });
+  });
+  events.push({ ...base, choices: [{ ...choiceBase, delta: {}, finish_reason: "tool_calls" }] });
+  return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+}
+
+/**
+ * Scan an SSE buffer for an error event that contains a MiniMax parse-error
+ * message with embedded XML, and synthesize a proper completion stream from
+ * it.  Returns the rewritten SSE text or null if no recovery is needed.
+ */
+function recoverMinimaxSseParseError(sseText, modelName) {
+  if (!sseText.includes("Failed to parse input") || !sseText.includes("<minimax:tool_call>")) return null;
+  // Walk every data: line to find the first event with an error.message containing the XML.
+  for (const line of sseText.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const obj = JSON.parse(payload);
+      const recovered = recoverFromMinimaxParseError(obj, modelName);
+      if (recovered) return synthesizeMinimaxSseFromCompletion(recovered);
+    } catch { /* skip */ }
+  }
+  return null;
+}
+
+/**
+ * Transform a buffered SSE response string.
+ * Accumulates all content deltas, detects <minimax:tool_call>, then re-emits
+ * synthetic SSE events in proper OpenAI tool_calls streaming format.
+ * Returns the original text unchanged if no tool calls are detected.
+ */
+function transformMinimaxSseBuffer(sseText) {
+  if (!sseText.includes("<minimax:tool_call>")) return sseText;
+
+  // Reconstruct the full content and a representative chunk skeleton.
+  let skeleton = null;
+  let accContent = "";
+  for (const line of sseText.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    const payload = trimmed.slice(5).trim();
+    if (payload === "[DONE]") continue;
+    try {
+      const chunk = JSON.parse(payload);
+      if (!skeleton) skeleton = chunk;
+      const delta = chunk?.choices?.[0]?.delta;
+      // Accumulate both content and reasoning_content — MiniMax M2.7 (reasoning model)
+      // may emit tool call XML inside reasoning_content rather than content.
+      if (typeof delta?.content === "string") accContent += delta.content;
+      if (typeof delta?.reasoning_content === "string") accContent += delta.reasoning_content;
+    } catch { /* skip malformed */ }
+  }
+
+  const parsed2 = parseMinimaxXmlToolCalls(accContent);
+  if (!parsed2 || !skeleton) return sseText;
+
+  const { textBefore, toolCalls } = parsed2;
+  const base = { id: skeleton.id, object: skeleton.object, created: skeleton.created, model: skeleton.model };
+  const choiceBase = { index: 0, logprobs: null };
+  const events = [];
+
+  // Emit text-before as a content delta (if any)
+  if (textBefore) {
+    events.push({ ...base, choices: [{ ...choiceBase, delta: { role: "assistant", content: textBefore }, finish_reason: null }] });
+  }
+
+  // Emit each tool call header then its arguments
+  toolCalls.forEach((tc, i) => {
+    events.push({ ...base, choices: [{ ...choiceBase, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: "" } }] }, finish_reason: null }] });
+    events.push({ ...base, choices: [{ ...choiceBase, delta: { tool_calls: [{ index: i, function: { arguments: tc.function.arguments } }] }, finish_reason: null }] });
+  });
+
+  // Finish event
+  events.push({ ...base, choices: [{ ...choiceBase, delta: {}, finish_reason: "tool_calls" }] });
+
+  return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+}
+
+/**
+ * Extract text from a message content field that may be a string or an array of
+ * OpenAI content parts (e.g. [{type:"text",text:"..."}]).
+ * Returns a plain string (joining all text parts) or null.
+ */
+function flattenContent(content) {
+  if (!content) return null;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (part?.type === "text" ? String(part.text ?? "") : ""))
+      .join("");
+  }
+  return null;
+}
+
+/**
+ * Sanitize incoming request messages for MiniMax.
+ * If any assistant message has raw <minimax:tool_call> XML in its content
+ * (string or array-of-parts), convert it to a proper OpenAI tool_calls array
+ * so llama-server's peg-native parser does not choke when building the prompt.
+ * Returns a new messages array if any changes were made, or the original if not.
+ */
+// Strip ALL <minimax:tool_call>...</minimax:tool_call> blocks (and any
+// trailing unterminated block) from a string. Returns the cleaned text (or
+// null if nothing remains after trimming).
+function stripMinimaxXml(text) {
+  if (typeof text !== "string" || !text.includes("<minimax:tool_call>")) return text;
+  let cleaned = text.replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/g, "");
+  // Drop any trailing unterminated XML block (model output cut off mid-call).
+  const orphan = cleaned.indexOf("<minimax:tool_call>");
+  if (orphan >= 0) cleaned = cleaned.slice(0, orphan);
+  cleaned = cleaned.trim();
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+function sanitizeMessagesForMinimax(messages) {
+  if (!Array.isArray(messages)) return messages;
+  let changed = false;
+  const sanitized = messages.map((msg) => {
+    if (!msg) return msg;
+    const flatContent = flattenContent(msg?.content);
+    const flatReasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content : null;
+    const contentHasXml = !!(flatContent && flatContent.includes("<minimax:tool_call>"));
+    const reasoningHasXml = !!(flatReasoning && flatReasoning.includes("<minimax:tool_call>"));
+    if (!contentHasXml && !reasoningHasXml) return msg;
+
+    changed = true;
+    const out = { ...msg };
+
+    // For assistant role: if there are no existing tool_calls, try to parse
+    // the XML into tool_calls. If parsing fails or tool_calls are already set,
+    // we still strip the XML so llama-server's chat parser doesn't choke.
+    if (msg.role === "assistant" && !Array.isArray(msg.tool_calls)) {
+      const xmlSource = contentHasXml ? flatContent : flatReasoning;
+      const parsed2 = parseMinimaxXmlToolCalls(xmlSource);
+      if (parsed2) out.tool_calls = parsed2.toolCalls;
+    }
+
+    if (contentHasXml) {
+      const cleaned = stripMinimaxXml(flatContent);
+      if (cleaned) out.content = cleaned; else delete out.content;
+    }
+    if (reasoningHasXml) {
+      const cleanedReasoning = stripMinimaxXml(flatReasoning);
+      if (cleanedReasoning) out.reasoning_content = cleanedReasoning; else delete out.reasoning_content;
+    }
+    return out;
+  });
+  return changed ? sanitized : messages;
+}
+
+// ---------------------------------------------------------------------------
 // Proxy core
 // ---------------------------------------------------------------------------
 
@@ -92,9 +374,28 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
   const contentType = String(req.headers["content-type"] || "").toLowerCase();
   const isJsonRequest = contentType.includes("application/json");
   if (bodyAllowed) {
-    body = isJsonRequest
-      ? (req.body && Object.keys(req.body).length > 0 ? JSON.stringify(req.body) : undefined)
-      : req;
+    if (isJsonRequest && req.body && Object.keys(req.body).length > 0) {
+      // Sanitize any <minimax:tool_call> XML that may be in assistant message content
+      // from a prior exchange. peg-native chokes on raw XML in incoming message history.
+      const sanitizedMessages = sanitizeMessagesForMinimax(req.body.messages);
+      const reqBody = sanitizedMessages !== req.body.messages
+        ? { ...req.body, messages: sanitizedMessages }
+        : req.body;
+      body = JSON.stringify(reqBody);
+      // Final defensive sweep: scrub any remaining <minimax:tool_call> XML
+      // anywhere in the serialised body (e.g. embedded in tools[] descriptions,
+      // tool_calls[].function.arguments, system prompts, tool role messages).
+      // We must encode the replacement as a JSON string fragment because we're
+      // operating on the serialised JSON body directly.
+      if (body.includes("<minimax:tool_call>")) {
+        // Strip well-formed blocks, including their JSON-escaped newlines.
+        body = body.replace(/<minimax:tool_call>[\s\S]*?<\\?\/minimax:tool_call>/g, "");
+        // Strip any remaining unterminated occurrences.
+        body = body.replace(/<minimax:tool_call>/g, "");
+      }
+    } else {
+      body = isJsonRequest ? undefined : req;
+    }
   }
 
   const abortController = new AbortController();
@@ -152,22 +453,41 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
     if (!upstream.body || (isJson && !isSse)) {
       const raw = await upstream.text();
       markProxyCompletion(instance);
+      let responseSent = raw;
       if (isJson && raw) {
-        try { updateInstanceUsageMetrics(instance, JSON.parse(raw)); } catch { /* transparent */ }
+        try {
+          const parsed = JSON.parse(raw);
+          updateInstanceUsageMetrics(instance, parsed);
+          if (!upstream.ok && isDiagnosticChat) {
+            // Recovery: llama-server's --jinja chat-template post-parser
+            // sometimes rejects the model's own MiniMax XML output. Extract
+            // the XML from the error message and synthesize a proper
+            // tool_calls completion so the client can act on it.
+            const recovered = recoverFromMinimaxParseError(parsed, req.body?.model);
+            if (recovered) {
+              res.status(200);
+              responseSent = JSON.stringify(recovered);
+            }
+          } else {
+            // Convert <minimax:tool_call> XML to OpenAI tool_calls format if present.
+            const transformed = isDiagnosticChat ? transformMinimaxNonStreaming(parsed) : parsed;
+            if (transformed !== parsed) responseSent = JSON.stringify(transformed);
+          }
+        } catch { /* transparent */ }
       }
       if (isDiagnosticChat) {
-        const preview = String(raw || "").replace(/\s+/g, " ").slice(0, 280);
+        const preview = String(responseSent || "").replace(/\s+/g, " ").slice(0, 280);
         audit("proxy.chat.response", {
           instanceId: instance.id,
           status: upstream.status,
           contentType: upstreamContentType,
-          responseBytes: String(raw || "").length,
+          responseBytes: String(responseSent || "").length,
           preview
         });
       }
       saveState(state);
       finalize();
-      return res.send(raw);
+      return res.send(responseSent);
     }
 
     if (isDiagnosticChat) {
@@ -204,16 +524,49 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
       finalize();
     }, firstTokenMs);
 
-    stream.on("data", () => {
-      if (!firstTokenReceived) {
-        firstTokenReceived = true;
+    // Buffer the entire SSE response for chat/completions so we can detect and
+    // transform <minimax:tool_call> XML before it reaches the client.
+    // We always buffer on chat endpoints (not just when tools are declared in
+    // the current request) because MiniMax can emit XML whenever it was trained
+    // to use tools, regardless of whether the client re-declared them.
+    if (isDiagnosticChat) {
+      const chunks = [];
+      stream.on("data", (chunk) => {
+        if (!firstTokenReceived) {
+          firstTokenReceived = true;
+          clearTimeout(firstTokenTimer);
+        }
+        chunks.push(chunk);
+      });
+      stream.on("end", () => {
         clearTimeout(firstTokenTimer);
-      }
-    });
-    stream.on("end", () => { clearTimeout(firstTokenTimer); finalize(); });
-    stream.on("error", () => { clearTimeout(firstTokenTimer); finalize(); if (!res.writableEnded) res.end(); });
-    res.on("close", () => { clearTimeout(firstTokenTimer); finalize(); });
-    stream.pipe(res);
+        markProxyCompletion(instance);
+        const sseText = Buffer.concat(chunks).toString("utf8");
+        // First check if the stream contains a llama-server parse error with
+        // recoverable XML payload; if so, replace the entire stream with a
+        // synthesized success completion.
+        const recovered = recoverMinimaxSseParseError(sseText, req.body?.model);
+        const transformed = recovered ?? transformMinimaxSseBuffer(sseText);
+        if (!res.writableEnded) {
+          res.write(transformed);
+          res.end();
+        }
+        finalize();
+      });
+      stream.on("error", () => { clearTimeout(firstTokenTimer); finalize(); if (!res.writableEnded) res.end(); });
+      res.on("close", () => { clearTimeout(firstTokenTimer); finalize(); });
+    } else {
+      stream.on("data", () => {
+        if (!firstTokenReceived) {
+          firstTokenReceived = true;
+          clearTimeout(firstTokenTimer);
+        }
+      });
+      stream.on("end", () => { clearTimeout(firstTokenTimer); finalize(); });
+      stream.on("error", () => { clearTimeout(firstTokenTimer); finalize(); if (!res.writableEnded) res.end(); });
+      res.on("close", () => { clearTimeout(firstTokenTimer); finalize(); });
+      stream.pipe(res);
+    }
   } catch (error) {
     clearTimeout(headersTimer);
     finalize();

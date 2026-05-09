@@ -4,6 +4,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { autoCtxVramBufferFraction, computeAutoCtxSize, orderGpuIdsForLayerPlacement } from "./auto-ctx.js";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -19,12 +20,6 @@ const strictSmokeCheck = process.env.STRICT_SMOKE_CHECK === "true";
 const gpuBleedMaxDeltaMiB = Number(process.env.GPU_BLEED_MAX_DELTA_MIB || 256);
 const allowBleedOnOtherAssignedGpus = process.env.GPU_BLEED_ALLOW_OTHER_ASSIGNED === "true";
 const enforceGpuBleedInMultiInstance = process.env.GPU_BLEED_ENFORCE_MULTI_INSTANCE === "true";
-// Fraction of free VRAM to reserve as a safety buffer when auto-sizing ctx.
-// e.g. 0.20 = keep 20% of free VRAM free, use the other 80% for KV cache.
-const autoCtxVramBufferFraction = Math.min(0.9, Math.max(0, Number(process.env.AUTO_CTX_VRAM_BUFFER || 0.05)));
-// Bytes of KV cache consumed per context token per layer (fp16 K+V = 2*2 bytes per head).
-// This is a conservative heuristic; actual usage depends on model architecture & kv quant.
-const autoCtxBytesPerTokenPerLayer = Number(process.env.AUTO_CTX_BYTES_PER_TOKEN_PER_LAYER || 512);
 const llamaServerBinary = String(process.env.LLAMA_SERVER_BIN || "llama-server").trim() || "llama-server";
 
 if (!bridgeAuthEnabled) {
@@ -181,7 +176,7 @@ function resolveServerArgs(profile) {
   );
   if (!hasParallel) {
     const inflight = Number(profile?.maxInflightRequests);
-    if (Number.isInteger(inflight) && inflight > 1) {
+    if (Number.isInteger(inflight) && inflight >= 1) {
       args.push("--parallel", String(Math.min(inflight, 64)));
     }
   }
@@ -203,10 +198,9 @@ function normalizeGpuList(value) {
 
 function applyGpuVisibilityEnv(env, gpuList) {
   const value = Array.isArray(gpuList) ? gpuList.join(",") : "";
-  // Force PCI bus ID ordering so CUDA device indices match nvidia-smi physical
-  // indices. Without this, CUDA uses "fastest first" enumeration which can
-  // reverse the device order on NVLink/SXM2 systems (e.g. CUDA_VISIBLE_DEVICES=8,9
-  // maps CUDA0→GPU9 instead of CUDA0→GPU8, causing all VRAM to appear on one GPU).
+  // Keep a stable physical ordering baseline, then use CUDA_VISIBLE_DEVICES to
+  // explicitly choose the runtime order. CUDA0 receives some extra model/output
+  // and scheduler pressure, so callers can put the roomiest card first.
   env.CUDA_DEVICE_ORDER = "PCI_BUS_ID";
   env.CUDA_VISIBLE_DEVICES = value;
   env.NVIDIA_VISIBLE_DEVICES = value;
@@ -235,6 +229,16 @@ function buildRuntimeEnv(baseEnv, profile) {
   return { env, backend, gpuIds };
 }
 
+function applyOrderedGpuVisibility(runtimeEnv, freeMibMap) {
+  if (!runtimeEnv || runtimeEnv.backend === "cpu" || runtimeEnv.gpuIds.length === 0) {
+    return [];
+  }
+  const visibleGpuIds = orderGpuIdsForLayerPlacement(freeMibMap, runtimeEnv.gpuIds);
+  applyGpuVisibilityEnv(runtimeEnv.env, visibleGpuIds);
+  runtimeEnv.visibleGpuIds = visibleGpuIds;
+  return visibleGpuIds;
+}
+
 async function runCommand(command, args) {
   return new Promise((resolve) => {
     execFile(command, args, { env: process.env }, (error, stdout, stderr) => {
@@ -248,114 +252,166 @@ async function runCommand(command, args) {
   });
 }
 
+// Inspect a profile's serverArgs for -ctk / -ctv KV cache quantisation flags
+// and return the larger (most conservative) bytes-per-element value.
+//   f32 → 4, f16/bf16 → 2, q8_0 → 1, q5_* → 0.625, q4_* → 0.5, default → 2 (fp16)
+function detectKvQuantBytesPerElement(profile) {
+  const serverArgs = Array.isArray(profile?.runtime?.serverArgs) ? profile.runtime.serverArgs : [];
+  function quantBytes(flag) {
+    const idx = serverArgs.findIndex((a) => a === flag);
+    const val = idx >= 0 ? String(serverArgs[idx + 1] || "").toLowerCase() : "";
+    if (val === "f32") return 4;
+    if (val === "f16" || val === "bf16") return 2;
+    if (val === "q8_0") return 1;
+    if (val === "q5_0" || val === "q5_1") return 0.625;
+    if (val === "q4_0" || val === "q4_1") return 0.5;
+    return 2;
+  }
+  return Math.max(quantBytes("-ctk"), quantBytes("-ctv"));
+}
+
+// Estimate model weight VRAM (MiB) from GGUF file size on disk.
+// For multi-shard models (-00001-of-00004.gguf) sums ALL shard file sizes.
+// Returns 0 if the file isn't accessible (caller falls back to free-VRAM only).
+function estimateModelSizeMib(modelPath) {
+  if (!modelPath) return 0;
+  try {
+    const shardMatch = modelPath.match(/-(\d{5})-of-(\d{5})\.gguf$/i);
+    if (shardMatch) {
+      const totalShards = parseInt(shardMatch[2], 10);
+      let totalBytes = 0;
+      for (let i = 1; i <= totalShards; i++) {
+        const shardPath = modelPath.replace(/-(\d{5})-of-/i, `-${String(i).padStart(5, "0")}-of-`);
+        try { totalBytes += fs.statSync(shardPath).size; } catch { /* skip missing shard */ }
+      }
+      return totalBytes / (1024 * 1024);
+    }
+    return fs.statSync(modelPath).size / (1024 * 1024);
+  } catch {
+    return 0;
+  }
+}
+
+// Derive bytes-per-token-per-layer (KV cache cost) from GGUF GQA dims:
+//   bpt = 2 (K+V) × kv_heads × head_dim × bytesPerElement
+// head_dim prefers the explicit attention.key_length field; falls back to
+// embedding_length / head_count which is inaccurate for some models (Qwen3, etc).
+// Returns null if dims are unavailable (caller falls back to env heuristic).
+function deriveBytesPerTokenPerLayer(ggufMeta, kvQuantBytesPerElement) {
+  if (!ggufMeta?.headCountKv) return null;
+  const headDim = ggufMeta.keyLength
+    || (ggufMeta.embeddingLength && ggufMeta.headCount
+        ? Math.floor(ggufMeta.embeddingLength / ggufMeta.headCount)
+        : null);
+  if (!headDim) return null;
+  return 2 * ggufMeta.headCountKv * headDim * kvQuantBytesPerElement;
+}
+
+// Resolve --ctx-size when the user left contextLength unset.
+// Mutates profile.contextLength on success and writes an `instance.auto_ctx`
+// meta event with full diagnostics. Always logs (success OR failure) so the
+// decision is observable in journalctl + bridge meta logs.
+async function resolveAutoContextLength(instanceId, profile) {
+  if (Number.isInteger(Number(profile.contextLength)) && Number(profile.contextLength) > 0) {
+    return; // user-specified, nothing to do
+  }
+  const gpuIds = Array.isArray(profile.gpus) ? profile.gpus.map(String) : [];
+  if (gpuIds.length === 0) return;
+
+  const freeMibMap = await getGpuFreeMemoryMap();
+
+  let ggufMeta = null;
+  const modelPath = String(profile.model || "").trim();
+  if (modelPath) {
+    try { ggufMeta = await readGgufMetadata(modelPath); } catch { /* proceed without */ }
+  }
+
+  // Layer count: profile override > GGUF kvLayerCount (hybrid models) > blockCount > 32.
+  const numLayers = (Number.isInteger(Number(profile.numLayers)) && Number(profile.numLayers) > 0)
+    ? Number(profile.numLayers)
+    : ggufMeta?.kvLayerCount ?? ggufMeta?.blockCount ?? 32;
+
+  const kvQuantBytesPerElement = detectKvQuantBytesPerElement(profile);
+  const bytesPerTokenPerLayer = deriveBytesPerTokenPerLayer(ggufMeta, kvQuantBytesPerElement);
+  const modelSizeMib = estimateModelSizeMib(modelPath);
+
+  // Surface GGUF identifiers on the profile for /v1/instances responses.
+  if (ggufMeta?.name) profile._ggufName = ggufMeta.name;
+  if (ggufMeta?.architecture) profile._ggufArchitecture = ggufMeta.architecture;
+
+  const parallelSlots = Math.max(1, Math.min(64, Number(profile?.maxInflightRequests) || 1));
+  const diag = computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib, bytesPerTokenPerLayer, parallelSlots);
+
+  let autoCtx = diag.ctxSize;
+
+  // Cap against the model's trained context length (RoPE goes out of distribution beyond).
+  let cappedByModelMax = false;
+  if (autoCtx && ggufMeta?.contextLength && autoCtx > ggufMeta.contextLength) {
+    autoCtx = ggufMeta.contextLength;
+    cappedByModelMax = true;
+  }
+
+  // Defensive absolute cap when GGUF didn't expose contextLength.
+  const AUTO_CTX_HARD_CAP = 1048576; // 1M tokens
+  let cappedByHardCap = false;
+  if (autoCtx && !ggufMeta?.contextLength && autoCtx > AUTO_CTX_HARD_CAP) {
+    console.warn(`[auto-ctx] ${instanceId}: GGUF contextLength missing; clamping ${autoCtx} -> ${AUTO_CTX_HARD_CAP}`);
+    autoCtx = AUTO_CTX_HARD_CAP;
+    cappedByHardCap = true;
+  }
+
+  const metaPayload = {
+    free_mib: freeMibMap ? Object.fromEntries(freeMibMap) : null,
+    selected_gpu_ids: gpuIds,
+    visible_gpu_ids: diag.visibleGpuIds,
+    parallel_slots: parallelSlots,
+    num_layers: numLayers,
+    kv_layer_count: ggufMeta?.kvLayerCount ?? null,
+    kv_heads: ggufMeta?.headCountKv ?? null,
+    kv_head_dim: ggufMeta?.keyLength ?? null,
+    bytes_per_token_per_layer: bytesPerTokenPerLayer,
+    kv_quant_bytes_per_element: kvQuantBytesPerElement,
+    model_size_mib: Math.round(modelSizeMib),
+    model_max_ctx: ggufMeta?.contextLength ?? null,
+    buffer_fraction: autoCtxVramBufferFraction,
+    compute_reserve_mib_per_gpu: diag.perGpuReserveMib,
+    compute_reserve_mib_total: diag.perGpuReserveMib * gpuIds.length,
+    total_free_mib: Math.round(diag.totalFreeMiB),
+    kv_budget_mib: Math.round(diag.kvBudgetMib),
+    bottleneck_gpu: diag.bottleneckGpu,
+    per_gpu_kv_budget: diag.perGpu,
+    raw_ctx: diag.ctxSize,
+    capped_by_model_max: cappedByModelMax,
+    capped_by_hard_cap: cappedByHardCap,
+    computed_ctx: autoCtx,
+    reason: diag.reason
+  };
+
+  if (autoCtx) {
+    profile.contextLength = autoCtx;
+  } else {
+    // Auto-ctx couldn't fit even the smallest configuration. Rather than letting
+    // llama-server default to the model's trained context (which usually OOMs),
+    // pin a tiny safe ctx so the instance comes up and the user can investigate.
+    const SAFE_FALLBACK_CTX = Number(process.env.AUTO_CTX_SAFE_FALLBACK || 8192);
+    const fallbackCtx = ggufMeta?.contextLength
+      ? Math.min(SAFE_FALLBACK_CTX, ggufMeta.contextLength)
+      : SAFE_FALLBACK_CTX;
+    profile.contextLength = fallbackCtx;
+    metaPayload.fallback_ctx = fallbackCtx;
+    metaPayload.computed_ctx = fallbackCtx;
+    console.warn(`[auto-ctx] ${instanceId}: NO autoCtx — reason=${diag.reason} kvBudget=${Math.round(diag.kvBudgetMib)}MiB totalFree=${Math.round(diag.totalFreeMiB)}MiB modelSize=${Math.round(modelSizeMib)}MiB reserve/gpu=${diag.perGpuReserveMib}MiB parallel=${parallelSlots} → falling back to ctx=${fallbackCtx}`);
+  }
+  writeMeta(instanceId, "instance.auto_ctx", metaPayload);
+}
+
 async function spawnLlamaServer(instanceId, record, env, numaNode = null) {
   const profile = record?.profile || {};
 
-  // Auto-size --ctx-size when the user left contextLength unset.
-  // Query free VRAM across the assigned GPUs and compute a safe ceiling
-  // with autoCtxVramBufferFraction reserved as headroom.
-  const needsAutoCtx = !(Number.isInteger(Number(profile.contextLength)) && Number(profile.contextLength) > 0);
-  if (needsAutoCtx) {
-    const gpuIds = Array.isArray(profile.gpus) ? profile.gpus.map(String) : [];
-    if (gpuIds.length > 0) {
-      try {
-        const freeMibMap = await getGpuFreeMemoryMap();
-
-        // Read GGUF metadata once: gives us layer count, GQA dims, max ctx, name, arch.
-        let ggufMeta = null;
-        const modelPath = String(profile.model || "").trim();
-        if (modelPath) {
-          try { ggufMeta = await readGgufMetadata(modelPath); } catch (_) { /* proceed without */ }
-        }
-
-        // Layer count: profile override > GGUF attention_layer_count (hybrid models) >
-        // tensor-name count (auto-detected from blk.N.attn_k.weight names) > block_count > 32.
-        const numLayers = (Number.isInteger(Number(profile.numLayers)) && Number(profile.numLayers) > 0)
-          ? Number(profile.numLayers)
-          : ggufMeta?.kvLayerCount ?? ggufMeta?.blockCount ?? 32;
-
-        // Exact KV bytes-per-token-per-layer from GGUF GQA fields.
-        // Formula: 2 (K+V) × kv_heads × head_dim × bytesPerElement
-        // Default bytesPerElement = 2 (fp16). If user passes -ctk/-ctv quant flags,
-        // each element shrinks: q8_0 → 1 byte, q4_0/q4_1 → 0.5 bytes, q5_0/q5_1 → 0.625 bytes.
-        // We use the larger of ctk/ctv to stay conservative.
-        const kvQuantBytesPerElement = (() => {
-          const serverArgs = Array.isArray(profile?.runtime?.serverArgs) ? profile.runtime.serverArgs : [];
-          function quantBytes(flag) {
-            // Find the value after -ctk or -ctv in the args array
-            const idx = serverArgs.findIndex((a) => a === flag);
-            const val = idx >= 0 ? String(serverArgs[idx + 1] || "").toLowerCase() : "";
-            if (val === "f32") return 4;
-            if (val === "f16") return 2;
-            if (val === "bf16") return 2;
-            if (val === "q8_0") return 1;
-            if (val === "q5_0" || val === "q5_1") return 0.625;
-            if (val === "q4_0" || val === "q4_1") return 0.5;
-            return 2; // unknown or not set → assume fp16
-          }
-          return Math.max(quantBytes("-ctk"), quantBytes("-ctv"));
-        })();
-
-        let bytesPerTokenPerLayer = null;
-        if (ggufMeta?.headCountKv) {
-          // Prefer the explicit per-head KV dimension (*.attention.key_length) stored
-          // in the GGUF. Fall back to embedding_length / head_count only when it is
-          // absent — that fallback is inaccurate for models (e.g. Qwen3) whose
-          // head_dim differs from embedding_length / n_heads.
-          const headDim = ggufMeta.keyLength
-            || (ggufMeta.embeddingLength && ggufMeta.headCount
-                ? Math.floor(ggufMeta.embeddingLength / ggufMeta.headCount)
-                : null);
-          if (headDim) {
-            bytesPerTokenPerLayer = 2 * ggufMeta.headCountKv * headDim * kvQuantBytesPerElement;
-          }
-        }
-
-        // Estimate model weight VRAM from GGUF file size on disk.
-        // Free VRAM is sampled BEFORE the model loads, so weights must be subtracted.
-        let modelSizeMib = 0;
-        if (modelPath) {
-          try {
-            const stat = fs.statSync(modelPath);
-            modelSizeMib = stat.size / (1024 * 1024);
-          } catch (_) {
-            // model file not accessible — modelSizeMib stays 0; buffer is the only guard
-          }
-        }
-
-        // Store GGUF name/arch on profile so /v1/instances can surface them.
-        if (ggufMeta?.name) profile._ggufName = ggufMeta.name;
-        if (ggufMeta?.architecture) profile._ggufArchitecture = ggufMeta.architecture;
-
-        const parallelSlots = Math.max(1, Math.min(64, Number(profile?.maxInflightRequests) || 1));
-        let autoCtx = computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib, bytesPerTokenPerLayer, parallelSlots);
-        // Cap against the model's trained context length stored in the GGUF header.
-        // Exceeding this produces garbage output (RoPE embeddings out of distribution).
-        if (autoCtx && ggufMeta?.contextLength && autoCtx > ggufMeta.contextLength) {
-          autoCtx = ggufMeta.contextLength;
-        }
-        if (autoCtx) {
-          profile.contextLength = autoCtx;
-          writeMeta(instanceId, "instance.auto_ctx", {
-            free_mib: Object.fromEntries(freeMibMap),
-            model_size_mib: Math.round(modelSizeMib),
-            model_max_ctx: ggufMeta?.contextLength ?? null,
-            num_layers: numLayers,
-            kv_layer_count: ggufMeta?.kvLayerCount ?? null,
-            kv_heads: ggufMeta?.headCountKv ?? null,
-            kv_head_dim: ggufMeta?.keyLength ?? null,
-            bytes_per_token_per_layer: bytesPerTokenPerLayer,
-            kv_quant_bytes_per_element: kvQuantBytesPerElement,
-            gpu_ids: gpuIds,
-            buffer_fraction: autoCtxVramBufferFraction,
-            parallel_slots: parallelSlots,
-            computed_ctx: autoCtx
-          });
-        }
-      } catch (err) {
-        console.warn(`[auto-ctx] failed to compute auto ctx-size for ${instanceId}: ${err.message}`);
-      }
-    }
+  try {
+    await resolveAutoContextLength(instanceId, profile);
+  } catch (err) {
+    console.warn(`[auto-ctx] failed to compute auto ctx-size for ${instanceId}: ${err.message}`);
   }
 
   const args = resolveServerArgs(profile);
@@ -675,8 +731,11 @@ async function readGgufMetadata(filePath) {
     for (let i = 0; i < kvCount; i++) {
       const key  = await r.str();
       const type = await r.u32();
-      if (type === 4 || type === 5) {          // UINT32 / INT32
-        const v = await r.u32();
+      if (type === 4 || type === 5 || type === 10 || type === 11) {
+        // UINT32 / INT32 / UINT64 / INT64 — some GGUFs (e.g. MiniMax) store
+        // *.context_length and other counts as 64-bit. Reading both keeps
+        // metadata extraction architecture-agnostic.
+        const v = (type === 10 || type === 11) ? await r.u64() : await r.u32();
         if      (key.endsWith(".context_length")          && !result.contextLength) result.contextLength = v;
         else if (key.endsWith(".block_count")             && !result.blockCount)    result.blockCount    = v;
         else if (key.endsWith(".attention_layer_count")   && !result.kvLayerCount)  result.kvLayerCount  = v;
@@ -719,42 +778,6 @@ async function readGgufMetadata(filePath) {
   } finally {
     if (fd) await fd.close();
   }
-}
-
-// Computes a safe --ctx-size from free VRAM across the assigned GPU set.
-// freeMibMap: Map<gpuIndex, freeMiB>; gpuIds: string[]; numLayers: number.
-// bytesPerTokenPerLayer: exact KV cost from GGUF metadata (falls back to autoCtxBytesPerTokenPerLayer).
-// Returns null if inputs are insufficient (caller skips auto-sizing).
-function computeAutoCtxSize(freeMibMap, gpuIds, numLayers, modelSizeMib = 0, bytesPerTokenPerLayer = null, parallelSlots = 1) {
-  if (!(freeMibMap instanceof Map) || freeMibMap.size === 0) return null;
-  if (!Array.isArray(gpuIds) || gpuIds.length === 0) return null;
-  if (!Number.isInteger(numLayers) || numLayers <= 0) return null;
-
-  // Sum free VRAM across the assigned GPUs.
-  let totalFreeMiB = 0;
-  for (const id of gpuIds) {
-    const mib = freeMibMap.get(String(id));
-    if (!Number.isFinite(mib)) return null; // unknown GPU — skip auto-sizing
-    totalFreeMiB += mib;
-  }
-
-  // Subtract model weight VRAM (free VRAM is sampled before the model loads, so the
-  // model file size must be deducted to avoid model + KV cache exceeding total VRAM).
-  const kvBudgetMib = Math.max(0, totalFreeMiB - (Number.isFinite(modelSizeMib) ? modelSizeMib : 0));
-
-  // Use caller-supplied exact KV cost if available, else fall back to env-var heuristic.
-  const bpt = (Number.isFinite(bytesPerTokenPerLayer) && bytesPerTokenPerLayer > 0)
-    ? bytesPerTokenPerLayer
-    : autoCtxBytesPerTokenPerLayer;
-
-  // Reserve buffer fraction, convert remaining to bytes.
-  // Divide by parallelSlots: llama-server allocates KV cache for all slots simultaneously.
-  const usableBytes = kvBudgetMib * (1 - autoCtxVramBufferFraction) * 1024 * 1024;
-  const ctxSize = Math.floor(usableBytes / (numLayers * bpt * Math.max(1, parallelSlots)));
-
-  // Clamp: minimum 512 tokens, round down to nearest 256 for clean numbers.
-  if (ctxSize < 512) return null;
-  return Math.floor(ctxSize / 256) * 256;
 }
 
 function activeAssignedGpuSet(excludeInstanceId = null) {
@@ -889,14 +912,15 @@ async function launchRuntimeForInstance(instanceId, record, reason = "start") {
   }
 
   const selectedGpuIds = runtimeEnv.gpuIds.map((g) => String(g));
+  let gpuMemoryBefore = null;
+  if (runtimeEnv.backend !== "cpu" && selectedGpuIds.length > 0) {
+    gpuMemoryBefore = await getGpuMemoryUsageMap();
+    applyOrderedGpuVisibility(runtimeEnv, gpuMemoryBefore.freeMibMap || await getGpuFreeMemoryMap());
+  }
   const numaNode = runtimeEnv.backend !== "cpu"
     ? await resolvePinnedNumaNode(selectedGpuIds)
     : null;
   const allowedOtherGpuIds = allowBleedOnOtherAssignedGpus ? activeAssignedGpuSet(instanceId) : new Set();
-  let gpuMemoryBefore = null;
-  if (runtimeEnv.backend !== "cpu" && selectedGpuIds.length > 0) {
-    gpuMemoryBefore = await getGpuMemoryUsageMap();
-  }
 
   writeMeta(instanceId, "instance.start.request", {
     reason,
@@ -905,6 +929,7 @@ async function launchRuntimeForInstance(instanceId, record, reason = "start") {
     port: Number(profile.port),
     model: String(profile.model),
     gpus: runtimeEnv.gpuIds.join(","),
+    visible_gpu_order: (runtimeEnv.visibleGpuIds || runtimeEnv.gpuIds).join(","),
     visible_devices: {
       cuda: env.CUDA_VISIBLE_DEVICES || "",
       nvidia: env.NVIDIA_VISIBLE_DEVICES || "",

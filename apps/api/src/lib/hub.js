@@ -135,34 +135,43 @@ export async function executeHubDownload(job, hfToken) {
 
 export function restorePartialDownloads() {
   const home = os.homedir();
-  const dir = path.resolve(modelsDir.replace(/^~/, home));
-  let entries;
-  try { entries = fs.readdirSync(dir); } catch { return; }
+  const lmfleetDir = path.resolve(path.join(modelsDir.replace(/^~/, home), "lmfleet"));
 
-  for (const name of entries) {
-    if (!name.endsWith(".gguf.part")) continue;
-    const partPath = path.join(dir, name);
-    const metaPath = partPath + ".meta.json";
-    let meta;
-    try { meta = JSON.parse(fs.readFileSync(metaPath, "utf8")); } catch { continue; }
-    if (!meta.repoId || !meta.filename) continue;
+  function walkForParts(dir) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walkForParts(fullPath);
+        continue;
+      }
+      if (!entry.name.endsWith(".gguf.part")) continue;
+      const partPath = fullPath;
+      const metaPath = partPath + ".meta.json";
+      let meta;
+      try { meta = JSON.parse(fs.readFileSync(metaPath, "utf8")); } catch { continue; }
+      if (!meta.repoId || !meta.filename) continue;
 
-    const destPath = partPath.slice(0, -5); // strip ".part"
-    const alreadyTracked = [...hubDownloadJobs.values()].some((j) => j.destPath === destPath);
-    if (alreadyTracked) continue;
+      const destPath = partPath.slice(0, -5); // strip ".part"
+      const alreadyTracked = [...hubDownloadJobs.values()].some((j) => j.destPath === destPath);
+      if (alreadyTracked) continue;
 
-    let size = 0;
-    try { size = fs.statSync(partPath).size; } catch { /* ignore */ }
+      let size = 0;
+      try { size = fs.statSync(partPath).size; } catch { /* ignore */ }
 
-    const jobId = crypto.randomUUID();
-    hubDownloadJobs.set(jobId, {
-      id: jobId, repoId: meta.repoId, filename: meta.filename,
-      hfFilePath: meta.hfFilePath || meta.filename,
-      destPath, partPath, metaPath,
-      bytesReceived: size, totalBytes: null, resumedFrom: size,
-      status: "paused", error: null, abortController: new AbortController(),
-      bytesPerSec: null, _rateAt: Date.now(), _rateBytes: size,
-    });
-    console.log(`Restored paused download: ${meta.repoId}/${meta.filename} (${size} bytes)`);
+      const jobId = crypto.randomUUID();
+      hubDownloadJobs.set(jobId, {
+        id: jobId, repoId: meta.repoId, filename: meta.filename,
+        hfFilePath: meta.hfFilePath || meta.filename,
+        destPath, partPath, metaPath,
+        bytesReceived: size, totalBytes: null, resumedFrom: size,
+        status: "paused", error: null, abortController: new AbortController(),
+        bytesPerSec: null, _rateAt: Date.now(), _rateBytes: size,
+      });
+      console.log(`Restored paused download: ${meta.repoId}/${meta.filename} (${size} bytes)`);
+    }
   }
+
+  walkForParts(lmfleetDir);
 }
