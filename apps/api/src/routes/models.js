@@ -3,6 +3,7 @@ import { state } from "../lib/state.js";
 import { resolveModelName, resolveInstanceByModelName } from "../lib/routing.js";
 import { instanceBaseUrl } from "../lib/urls.js";
 import { proxyToInstance } from "../lib/proxy.js";
+import { getRouteHourlyBreakdown } from "../lib/frontier.js";
 
 const router = express.Router();
 
@@ -66,6 +67,26 @@ router.get("/models", (_req, res) => {
         });
       }
     }
+  }
+
+  // Append orchestration routes as virtual models
+  for (const route of (state.orchestrationRoutes || [])) {
+    const hourly = getRouteHourlyBreakdown(route.name);
+    data.push({
+      id: route.name,
+      object: "model",
+      created: Math.floor(new Date(route.createdAt || Date.now()).getTime() / 1000),
+      owned_by: "llamafleet",
+      instance_id: null,
+      profile_name: null,
+      effective_model: route.name,
+      pool: false,
+      instance_count: 0,
+      type: "orchestration",
+      description: route.description || "",
+      rule_count: Array.isArray(route.rules) ? route.rules.length : 0,
+      _hourly: hourly
+    });
   }
 
   res.json({ object: "list", data });

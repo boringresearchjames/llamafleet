@@ -21,6 +21,11 @@ import modelsRouter from "./routes/models.js";
 import localModelsRouter from "./routes/local-models.js";
 import hubRouter from "./routes/hub.js";
 import systemRouter from "./routes/system.js";
+import orchestrationRouter from "./routes/orchestration.js";
+import { matchOrchestrationRoute, resolveBackend, getFrontierBackend } from "./lib/orchestration.js";
+import { proxyToFrontier } from "./lib/frontier.js";
+import { resolveInstanceByModelName } from "./lib/routing.js";
+import { proxyToInstance } from "./lib/proxy.js";
 
 const corsHeaders = "Authorization, Content-Type, X-Bridge-Token, X-HF-Token";
 
@@ -66,6 +71,96 @@ app.use("/v1", settingsRouter);
 app.use("/v1", instanceConfigsRouter);
 app.use("/v1", profilesRouter);
 app.use("/v1", instancesRouter);
+
+// ---------------------------------------------------------------------------
+// Orchestration intercept — runs before modelsRouter for /v1/chat/completions
+// ---------------------------------------------------------------------------
+const largeJsonOrch = express.json({ limit: "50mb" });
+app.post("/v1/chat/completions", largeJsonOrch, async (req, res, next) => {
+  const modelName = String(req.body?.model || "").trim();
+  const route = matchOrchestrationRoute(modelName);
+  if (!route) return next(); // not an orchestration route — fall through to modelsRouter
+
+  const startedAt = Date.now();
+  const { backend, ruleId } = await resolveBackend(route, req.body);
+
+  async function dispatchBackend(b) {
+    if (b.type === "frontier") {
+      const fb = getFrontierBackend(b.backendId);
+      if (!fb) {
+        res.status(502).json({ error: { message: `Frontier backend "${b.backendId}" not found`, type: "server_error" } });
+        return;
+      }
+      await proxyToFrontier(fb, req, res, route.name);
+    } else if (b.type === "local") {
+      const resolved = resolveInstanceByModelName(b.model);
+      if (resolved.error) {
+        res.status(resolved.status).json({ error: { message: resolved.error, type: "invalid_request_error" } });
+        return;
+      }
+      const targetUrl = `${instanceBaseUrl(resolved.instance)}${req.path}`;
+      await proxyToInstance(resolved.instance, req, res, targetUrl);
+    } else if (b.type === "config") {
+      const config = (state.instanceConfigs || []).find(c => c.id === b.configId);
+      if (!config || !Array.isArray(config.instances) || config.instances.length === 0) {
+        res.status(502).json({ error: { message: `Config "${b.configId}" not found`, type: "server_error" } });
+        return;
+      }
+      // Try each config instance model/name until one resolves to a running instance
+      let resolved = null;
+      for (const cfgInst of config.instances) {
+        const attempt = resolveInstanceByModelName(cfgInst.model);
+        if (!attempt.error) { resolved = attempt; break; }
+        const attempt2 = resolveInstanceByModelName(cfgInst.name);
+        if (!attempt2.error) { resolved = attempt2; break; }
+      }
+      if (!resolved) {
+        res.status(503).json({ error: { message: `No instances running for config "${b.configName || b.configId}"`, type: "server_error" } });
+        return;
+      }
+      const targetUrl = `${instanceBaseUrl(resolved.instance)}${req.path}`;
+      await proxyToInstance(resolved.instance, req, res, targetUrl);
+    } else {
+      res.status(500).json({ error: { message: `Unknown backend type: ${b.type}`, type: "server_error" } });
+    }
+  }
+
+  let dispatchOk = false;
+  try {
+    await dispatchBackend(backend);
+    dispatchOk = true;
+  } catch (err) {
+    if (!res.headersSent && route.fallbackBackend) {
+      audit("orchestration.fallback", {
+        route: route.name, primaryBackend: backend, ruleId,
+        error: err?.message, latencyMs: Date.now() - startedAt
+      });
+      try {
+        await dispatchBackend(route.fallbackBackend);
+        dispatchOk = true;
+      } catch (fallbackErr) {
+        if (!res.headersSent) {
+          res.status(502).json({ error: { message: `Fallback also failed: ${fallbackErr?.message}`, type: "proxy_error" } });
+        } else if (!res.writableEnded) {
+          res.end();
+        }
+      }
+    } else if (!res.headersSent) {
+      res.status(502).json({ error: { message: err?.message || "Orchestration dispatch failed", type: "proxy_error" } });
+    } else if (!res.writableEnded) {
+      res.end();
+    }
+  }
+
+  if (dispatchOk) {
+    audit("orchestration.routed", {
+      route: route.name, backend, ruleId, latencyMs: Date.now() - startedAt
+    });
+  }
+});
+
+app.use("/api", auth, orchestrationRouter);
+
 app.use("/v1", modelsRouter);
 app.use("/v1", localModelsRouter);
 app.use("/v1", hubRouter);

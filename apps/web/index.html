@@ -44,6 +44,7 @@
     <nav class="page-tabs">
       <button id="tabInstances" class="tab-btn tab-btn-active" type="button">⚡ Instances</button>
       <button id="tabModels" class="tab-btn" type="button">🗄 Models</button>
+      <button id="tabOrchestration" class="tab-btn" type="button">⇄ Orchestration</button>
       <button id="tabAbout" class="tab-btn" type="button">ℹ About</button>
       <div id="dlStatusStrip" class="dl-status-strip" hidden></div>
     </nav>
@@ -71,6 +72,18 @@
     <div id="pageModels" class="layout" hidden>
       <lf-hub-page></lf-hub-page>
     </div><!-- #pageModels -->
+
+    <div id="pageOrchestration" class="layout" hidden>
+      <section class="card span-12">
+        <div class="section-header">
+          <div>
+            <h2>Model Orchestration</h2>
+            <p class="card-subtitle">Route virtual model names to local instances or frontier APIs based on rules. Save on API costs by sending tool calls and agentic loops to local models.</p>
+          </div>
+        </div>
+        <lf-orchestration-panel></lf-orchestration-panel>
+      </section>
+    </div><!-- #pageOrchestration -->
 
     <div id="pageAbout" class="layout" hidden>
 

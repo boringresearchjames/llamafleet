@@ -8,6 +8,8 @@ export const defaultState = {
   instanceConfigs: [],
   instances: [],
   audit: [],
+  orchestrationRoutes: [],
+  frontierBackends: [],
   settings: {
     security: {
       api: { requireApiKey: true },
@@ -56,6 +58,8 @@ function migrateState(raw) {
   };
   next.users = Array.isArray(next.users) ? next.users : [];
   next.sessions = Array.isArray(next.sessions) ? next.sessions : [];
+  next.orchestrationRoutes = Array.isArray(next.orchestrationRoutes) ? next.orchestrationRoutes : [];
+  next.frontierBackends = Array.isArray(next.frontierBackends) ? next.frontierBackends : [];
   return next;
 }
 
@@ -78,6 +82,8 @@ export function toSharedConfig(s) {
     note: "Shareable config. Secrets, password hashes, and session tokens are excluded.",
     settings: { security: s.settings?.security || defaultState.settings.security },
     profiles: s.profiles || [],
+    orchestrationRoutes: s.orchestrationRoutes || [],
+    frontierBackends: (s.frontierBackends || []).map(({ apiKey: _omit, ...rest }) => rest),
     users: (s.users || []).map((u) => ({ username: u.username, disabled: Boolean(u.disabled) }))
   };
 }

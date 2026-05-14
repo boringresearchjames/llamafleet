@@ -13,6 +13,7 @@ import './components/lf-instances-panel.js';
 import './components/lf-config-library.js';
 import './components/lf-hub-page.js';
 import { setOperationPending, loadModelList } from './components/lf-launch-form.js';
+import './components/lf-orchestration-panel.js';
 import { initTestDialog } from './components/lf-test-dialog.js';
 
 const $ = (id) => document.getElementById(id);
@@ -117,21 +118,24 @@ $("closeAll").onclick = async () => {
 function initTabs() {
   const tabInstances = document.getElementById("tabInstances");
   const tabModels = document.getElementById("tabModels");
+  const tabOrchestration = document.getElementById("tabOrchestration");
   const tabAbout = document.getElementById("tabAbout");
   const pageInstances = document.getElementById("pageInstances");
   const pageModels = document.getElementById("pageModels");
+  const pageOrchestration = document.getElementById("pageOrchestration");
   const pageAbout = document.getElementById("pageAbout");
   if (!tabInstances || !tabModels) return;
 
   function activate(activeTab, activePage) {
-    [tabInstances, tabModels, tabAbout].forEach(t => t?.classList.remove("tab-btn-active"));
-    [pageInstances, pageModels, pageAbout].forEach(p => { if (p) p.hidden = true; });
+    [tabInstances, tabModels, tabOrchestration, tabAbout].forEach(t => t?.classList.remove("tab-btn-active"));
+    [pageInstances, pageModels, pageOrchestration, pageAbout].forEach(p => { if (p) p.hidden = true; });
     activeTab.classList.add("tab-btn-active");
     activePage.hidden = false;
   }
 
   tabInstances.addEventListener("click", () => activate(tabInstances, pageInstances));
   tabModels.addEventListener("click", () => activate(tabModels, pageModels));
+  tabOrchestration?.addEventListener("click", () => activate(tabOrchestration, pageOrchestration));
   tabAbout?.addEventListener("click", () => {
     activate(tabAbout, pageAbout);
     void loadAboutInfo();

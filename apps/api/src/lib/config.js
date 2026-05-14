@@ -20,6 +20,8 @@ export const bridgeAuthEnabled = Boolean(bridgeToken && bridgeToken !== "change-
 export const publicHostOverride = String(process.env.LLAMAFLEET_PUBLIC_HOST || "").trim();
 export const modelsDir = String(process.env.MODELS_DIR || "").trim() || path.join(os.homedir(), ".lmstudio", "models");
 export const corsOrigin = process.env.CORS_ORIGIN || "*";
+export const frontierTimeoutMs = Number(process.env.FRONTIER_TIMEOUT_MS || 30000);
+export const frontierFirstTokenMs = Number(process.env.FRONTIER_FIRST_TOKEN_MS || 60000);
 
 if (!apiAuthEnabled) {
   console.warn("API auth disabled: API_AUTH_TOKEN not set.");
