@@ -2641,6 +2641,8 @@ lf-host-stats {
   font-size: 13px;
   color: var(--ink);
   font-family: inherit;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .orch-textarea {
   background: rgba(13, 19, 35, 0.6);
@@ -2678,6 +2680,7 @@ lf-host-stats {
 
 .orch-backend-row { display: flex; gap: 12px; }
 .orch-backend-picker select { width: 100%; }
+.orch-rule-row .orch-rule-backend-picker { flex: 1; min-width: 0; }
 
 .orch-shadow-warning {
   font-size: 12px;
