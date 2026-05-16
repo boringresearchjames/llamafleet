@@ -109,8 +109,12 @@ export async function proxyToFrontier(backend, req, res, routeName) {
   const outgoingBody = { ...defaults, ...incomingBody, model: backend.model };
 
   // Build headers — strip hop-by-hop, drop caller's Authorization, inject ours
+  // API key supports env var references: a value like "$OPENROUTER_KEY" is resolved
+  // from process.env at request time so state.json never needs to hold the real secret.
+  const rawKey = backend.apiKey || "";
+  const resolvedKey = rawKey.startsWith("$") ? (process.env[rawKey.slice(1)] || "") : rawKey;
   const headers = proxyRequestHeaders(req);
-  headers["authorization"] = `Bearer ${backend.apiKey || ""}`;
+  headers["authorization"] = `Bearer ${resolvedKey}`;
   headers["content-type"] = "application/json";
   if (backend.extraHeaders && typeof backend.extraHeaders === "object") {
     Object.entries(backend.extraHeaders).forEach(([k, v]) => {

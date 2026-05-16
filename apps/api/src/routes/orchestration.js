@@ -3,6 +3,7 @@ import { state, saveState } from "../lib/state.js";
 import { audit } from "../lib/audit.js";
 import { now } from "../lib/utils.js";
 import { getAllFrontierStats, getRouteHourlyBreakdown } from "../lib/frontier.js";
+import { getOrchestrationLog, simulateRoute } from "../lib/orchestration.js";
 
 const router = express.Router();
 
@@ -212,6 +213,24 @@ router.delete("/frontier-backends/:id", (req, res) => {
   saveState(state);
   audit("orchestration.frontier.delete", { id: req.params.id, name: backend.name });
   res.json({ success: true });
+});
+
+// ---------------------------------------------------------------------------
+// Routing Log
+// ---------------------------------------------------------------------------
+
+router.get("/orchestration-log", (_req, res) => {
+  res.json({ data: getOrchestrationLog() });
+});
+
+// ---------------------------------------------------------------------------
+// Simulate — dry-run rule evaluation for a given route
+// ---------------------------------------------------------------------------
+
+router.post("/orchestration-routes/:id/simulate", (req, res) => {
+  const result = simulateRoute(req.params.id, req.body || {});
+  if (!result) return res.status(404).json({ error: "Route not found" });
+  res.json(result);
 });
 
 export default router;

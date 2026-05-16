@@ -198,3 +198,46 @@ Condition types:
 - Prior art: LiteLLM (fallback chains, requestDefaults pattern), RouteLLM (classifier threshold concept), Portkey (virtual key concept)
 - Rule ordering: simple ordered list with up/down buttons in UI (no drag-and-drop)
 - Default classifier system prompt: *"You are a routing classifier. Reply with exactly one word: the task category."* — overridable per route
+
+---
+
+## Phase 5 — Routing Inspector
+
+**Goal:** Give visibility into real orchestration decisions and let operators verify that rule changes would have produced the same outcome.
+
+### Components
+
+**In-memory request log (`orchestration.js`)**
+- Module-level ring buffer, max 200 entries, resets on service restart (never persisted).
+- Appended on every `orchestration.routed` event (after successful dispatch).
+- Entry shape: `{ id, at, routeName, ruleId, backend, latencyMs, toolsPresent, toolCount, messageCount, estimatedTokens }`
+
+**API endpoints (`routes/orchestration.js`)**
+- `GET /api/orchestration-log` — returns `{ data: [...] }` newest-first.
+- `POST /api/orchestration-routes/:id/simulate` — takes `{ messages, tools?, tool_choice? }`, evaluates current rules dry-run (no dispatch), returns full trace.
+
+**Simulate trace shape:**
+```
+{
+  routeId, routeName,
+  resolvedBackend,   ← backend object that would be chosen now
+  ruleId,            ← "default" or the matched rule id
+  trace: [           ← one entry per rule, in order
+    { ruleId, conditions: [{type, op, value, result}], matched }
+  ],
+  estimatedTokens, toolsPresent, toolCount, messageCount
+}
+```
+
+**UI panel section (`lf-orchestration-panel.js`)**
+- Third `orch-section` after Frontier Backends, rendered into a separate `.orch-log-section` div (so log refresh doesn't re-render the rest of the panel).
+- Grid table: Time · Route · Rule badge · Backend badge · Latency · Meta chips (tools / messages / tokens).
+- Auto-refreshes every 5 seconds via `setInterval`; manual Refresh button.
+- **Simulate button** on each row — reconstructs a synthetic request body from stored metadata (tool stubs, message stubs sized to estimatedTokens) and calls the simulate endpoint, then shows:
+  - Per-rule pass/fail chips for each condition.
+  - Verdict: "Would route to X (same)" or "⚠ Rules changed: was X, now routes to Y".
+
+### Key design decisions
+- Log is in-memory only — no disk I/O, no state bloat. Survives only for the lifetime of the process.
+- Simulate uses a synthetic body (not the original request body, which is not stored) — sufficient for all static condition types (toolsPresent, toolCount, estimatedTokens, messageCount).
+- Log refresh is a lightweight separate fetch that only updates `.orch-log-section`; route/backend edits do a full `_load()` as before.

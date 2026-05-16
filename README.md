@@ -14,6 +14,9 @@ Every instance is reachable through a single **OpenAI-compatible API** at `http:
 - OpenAI-compatible reverse proxy per instance — all `llama-server` processes bind to `127.0.0.1`; one port for everything
 - **Named model routing with least-loaded pool support** — `POST /v1/chat/completions` with `"model": "MyModel"` routes to the instance with the lowest in-flight request fraction; ties are broken with round-robin. Append `-1`, `-2`, etc. to pin to a specific instance (e.g. `"model": "MyModel-1"`). `GET /v1/models` returns both the pool entry and each pinned alias so any OpenAI client can discover them automatically.
 - **Heterogeneous compute pools** — combine GPU-accelerated (NVIDIA/AMD/Intel), CPU-only, and mixed-offload `llama-server` instances under a single model name. Load is distributed proportionally — a GPU instance with `maxInflightRequests=8` will absorb more traffic than a CPU fallback set to 1, so faster instances naturally handle more load.
+- **Orchestration routing** — create virtual model names that route requests to different backends based on real-time conditions: which tools were called, message count, estimated token count, system prompt content, and more. Use a local model for active agentic tool loops and a frontier model (Copilot, OpenRouter, etc.) for everything else — all from one `base_url`.
+- **Frontier backends** — proxy any OpenAI-compatible API as a named backend with per-backend model override, auth, request defaults, and per-request cost tracking. Mix local and cloud within a single conversation transparently.
+- **Routing inspector** — rolling log of every routed request showing which rule fired, which backend was selected, latency, and a per-request snapshot of tools, messages, and tool calls. Expandable rows with newest-first message view and an inline rule tester that evaluates your edited conditions against real captured requests live.
 - Global bearer token auth for both dashboard and all proxy traffic
 - Config profiles — save a GPU + context + server args combination to reuse across launches
 - Auto-restart with configurable backoff on unclean exits
@@ -23,6 +26,7 @@ Every instance is reachable through a single **OpenAI-compatible API** at `http:
 - Aggregate GPU VRAM usage bar in the instances table footer (used/total GiB across all assigned GPUs)
 - Log viewer with auto-tail and clone-setup action per instance
 - Model Routing dashboard section — visual overview of which instances form a least-loaded pool vs. solo routes, with one-click copy of each pinned model name
+- Speed test (TPS) per instance — uses server-side `llama.cpp` timing data (`predicted_per_second`) for accurate generation and prefill throughput measurement
 
 LlamaFleet uses GGUF models via `llama-server` directly — no LM Studio or Ollama required. Works on NVIDIA (including pre-Ampere V100/10xx/20xx), AMD, and CPU.
 
@@ -41,6 +45,8 @@ All four tools run `llama.cpp` under the hood. The differences are in the ops mo
 | Multiple models loaded at once | ✅ Unlimited, independent processes | ✅ Multiple backends | ✅ Via `OLLAMA_MAX_LOADED_MODELS` | ✅ JIT-loaded |
 | Least-loaded pooling under one model name | ✅ Built-in (round-robin tiebreak) | ❌ | ❌ | ❌ |
 | Heterogeneous pools (mix GPU/CPU instances) | ✅ Mix any runtimes under one model name | ❌ | ❌ | ❌ |
+| **Orchestration routing (local ↔ frontier)** | ✅ Rule-based, condition-driven | ❌ | ❌ | ❌ |
+| **Frontier API proxy (OpenAI, Copilot, etc.)** | ✅ Named backends with cost tracking | ⚠ Via API backends | ❌ | ❌ |
 | Any local GGUF | ✅ Scan paths + HF Hub browser | ✅ Local files | ✅ `FROM ./model.gguf` | ✅ Local files + HF browser |
 | Browser dashboard | ✅ | ✅ React UI | ❌ (3rd-party only) | ❌ Desktop GUI only |
 | OpenAI-compatible REST API | ✅ | ✅ | ✅ | ✅ |
@@ -176,6 +182,77 @@ All endpoints require `Authorization: Bearer <token>` when auth is enabled. Endp
 
 ---
 
+## Orchestration Routing
+
+Orchestration routing lets you define **virtual model names** that route each request to the best available backend — local `llama-server` instances or any OpenAI-compatible frontier API — based on what the request actually contains.
+
+### How it works
+
+Point your client (opencode, Continue, any OpenAI-compatible tool) at `http://host:8081/v1` and set `model` to a name you defined as an orchestration route. LlamaFleet inspects each incoming request and evaluates your rules in order. The first matching rule wins; if nothing matches, the route's **default backend** is used.
+
+```
+Client  →  POST /v1/chat/completions  {"model": "OpenCode"}
+                        │
+                        ▼
+              Evaluate rules in order
+                        │
+          ┌─────────────┴──────────────┐
+          │ rule matched               │ no match
+          ▼                            ▼
+    Local llama-server          Default: Frontier API
+    (Qwen3 35B MoE)             (Copilot / OpenRouter)
+```
+
+### Condition types
+
+Each rule has one or more conditions (all must match — AND logic):
+
+| Condition | Description |
+|---|---|
+| `toolsPresent` | Request includes any tool definitions or `tool_choice` |
+| `toolNameContains` | A tool *available* in the request has a matching name |
+| `toolCalledContains` | The most recent assistant message *actually invoked* a matching tool |
+| `systemPromptContains` | The system prompt contains a keyword |
+| `messageContains` | Any message in the history contains a keyword |
+| `estimatedTokens gt/lt` | Estimated token count exceeds or is below a threshold |
+| `multiTurnDepth gt/lt` | Total message count exceeds or is below a threshold |
+
+> **`toolCalledContains` vs `toolNameContains`**: Use `toolCalledContains` to detect active agentic loops. It fires only when the *last* assistant message invoked that tool — meaning the model is mid-loop right now. Once the model gives a final text answer (no `tool_calls` in its last message), the condition resets and the next request falls back to the default backend. `toolNameContains` checks the tools *definition* array, which is the same on every request for clients like opencode that always send all tools.
+
+### Example: local for agentic work, frontier for everything else
+
+A typical setup for opencode or similar agentic coding tools:
+
+1. **Create a frontier backend** → Orchestration → Frontier Backends → point it at your OpenAI-compatible API (Copilot, OpenRouter, etc.)
+2. **Create an orchestration route** named `OpenCode` (or any name) with:
+   - Default backend → your frontier API
+   - Rule: `toolCalledContains: bash` → local model
+   - Rule: `toolCalledContains: webfetch` → local model
+3. Set `base_url = http://host:8081/v1` and `model = OpenCode` in your client
+
+Result: simple questions and code review go to the frontier model; turns where the model is actively running shell commands or fetching pages are handled by the local GPU model.
+
+### Frontier backends
+
+Each frontier backend stores:
+- **Base URL** — the OpenAI-compatible API root (e.g. `https://openrouter.ai/api/v1`)
+- **Model** — the model name to inject on every forwarded request
+- **API key** — stored server-side, never exposed to the browser after saving
+- **Request defaults** — a JSON object merged as defaults into every request (caller wins on conflict). Use this to set `max_tokens`, `temperature`, or any other parameter the client does not send
+- **Extra headers** — injected on every forwarded request (useful for OpenRouter's `HTTP-Referer` etc.)
+- **Cost tracking** — optional `costPer1kInputTokens` / `costPer1kOutputTokens` for spend monitoring
+
+### Routing inspector
+
+The **Routing Log** section shows the last 200 routed requests in real time (auto-refreshed every 5 s). Each row shows the route name, which rule fired (or `default`), which backend was selected, latency, and request metadata. Expand any row to see:
+- The tools available in the request
+- The last 5 messages (newest first) — including tool calls made by the assistant
+- The `tool_choice` value
+
+Click **Test rules →** on any log row to open the route editor with that request pre-loaded. Conditions are evaluated live in the browser as you edit rules, showing pass/fail per condition and whether routing would change.
+
+---
+
 ## Architecture
 
 LlamaFleet is two core Node.js services plus an optional bridge router:
@@ -278,6 +355,8 @@ openssl rand -hex 32
 - **`llama-server` binary required** — LlamaFleet does not bundle or build it. Get a binary from the [llama.cpp releases page](https://github.com/ggerganov/llama.cpp/releases).
 - **No per-instance auth** — Auth is enforced at the proxy layer via the global `API_AUTH_TOKEN`. There is no per-instance key.
 - **No speculative decoding or prefix caching** — Pass the relevant `llama-server` flags via `runtimeArgs` if the binary supports them.
+- **Orchestration routing log is in-memory** — The routing log resets on service restart (last 200 entries only). It is not persisted to disk.
+- **Orchestration classifier rule requires a running local instance** — The optional LLM-based classifier condition requires at least one ready local instance to handle the classification call.
 
 ## Built with AI assistance
 

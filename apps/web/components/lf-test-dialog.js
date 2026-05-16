@@ -214,6 +214,7 @@ export async function runInstanceSpeedTest() {
   let chunkCount = 0;
   let fullText = '';
   let usage = null;
+  let timings = null;
 
   try {
     const headers = { 'Content-Type': 'application/json' };
@@ -243,6 +244,7 @@ export async function runInstanceSpeedTest() {
         try {
           const chunk = JSON.parse(raw);
           if (chunk.usage) usage = chunk.usage;
+          if (chunk.timings) timings = chunk.timings;
           const delta = chunk?.choices?.[0]?.delta?.content;
           if (typeof delta === 'string' && delta.length > 0) {
             if (firstTokenMs === null) firstTokenMs = Date.now();
@@ -259,20 +261,28 @@ export async function runInstanceSpeedTest() {
     const genMs = (firstTokenMs !== null && lastTokenMs !== null) ? (lastTokenMs - firstTokenMs) : totalMs;
     const completionTokens = usage?.completion_tokens ?? chunkCount;
     const promptTokens = usage?.prompt_tokens ?? 'n/a';
-    const tps = (genMs > 100 && completionTokens > 0)
-      ? (completionTokens / (genMs / 1000)).toFixed(2)
-      : 'n/a';
+    // Prefer server-side timings (llama.cpp predicted_per_second) — wall-clock
+    // delta is unreliable when a fast model delivers all tokens in one burst.
+    const serverTps = timings?.predicted_per_second;
+    const serverPrefillTps = timings?.prompt_per_second;
+    const tps = serverTps != null
+      ? serverTps.toFixed(1) + ' (server)'
+      : completionTokens > 0 && genMs > 50
+        ? (completionTokens / (genMs / 1000)).toFixed(1) + ' (wall-clock)'
+        : 'n/a (too fast to measure client-side)';
+    const prefillInfo = serverPrefillTps != null ? ` | prefill: ${serverPrefillTps.toFixed(1)} tok/s` : '';
     const modelBasename = modelId.split('/').pop().split('\\').pop();
 
     result.textContent = [
       '=== SPEED TEST RESULTS ===',
       '',
-      `  tokens/sec (gen):  ${tps} tok/s`,
+      `  tokens/sec (gen):  ${tps}`,
+      `  tokens/sec (prefill): ${serverPrefillTps != null ? serverPrefillTps.toFixed(1) + ' tok/s (server)' : 'n/a'}`,
       `  time to 1st token: ${ttftMs !== null ? ttftMs + ' ms' : 'n/a'}`,
       `  total latency:     ${totalMs} ms`,
       `  completion tokens: ${completionTokens}`,
       `  prompt tokens:     ${promptTokens}`,
-      `  generation time:   ${genMs} ms`,
+      `  generation time:   ${timings?.predicted_ms != null ? timings.predicted_ms.toFixed(0) + ' ms (server)' : genMs + ' ms (wall-clock)'}`,
       '',
       `  instance: ${targetId}`,
       `  model: ${modelBasename}`,
@@ -280,7 +290,7 @@ export async function runInstanceSpeedTest() {
       '--- response preview (first 300 chars) ---',
       fullText.trim().slice(0, 300) || '(empty)'
     ].join('\n');
-    toast(`Speed test done: ${tps} tok/s`);
+    toast(`Speed test done: ${serverTps != null ? serverTps.toFixed(1) : tps} tok/s`);
   } catch (error) {
     const elapsed = Date.now() - startMs;
     result.textContent = [

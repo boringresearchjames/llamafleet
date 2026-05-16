@@ -35,6 +35,21 @@ function evaluateCondition(condition, body) {
       const needle = String(value).toLowerCase();
       return body.tools.some((t) => String(t?.function?.name || "").toLowerCase().includes(needle));
     }
+    case "toolCalledContains": {
+      // Only check the MOST RECENT assistant message.
+      // This fires while the model is actively in a tool loop, but resets once
+      // it gives a final answer (no tool_calls in last assistant msg).
+      if (!value || !Array.isArray(body.messages)) return false;
+      const needle = String(value).toLowerCase();
+      for (let i = body.messages.length - 1; i >= 0; i--) {
+        const m = body.messages[i];
+        if (m?.role === "assistant") {
+          return Array.isArray(m.tool_calls) &&
+            m.tool_calls.some((tc) => String(tc?.function?.name || "").toLowerCase().includes(needle));
+        }
+      }
+      return false;
+    }
     case "systemPromptContains": {
       if (!value || !Array.isArray(body.messages)) return false;
       const sys = body.messages.find((m) => m?.role === "system");
@@ -197,4 +212,60 @@ export async function resolveBackend(route, body) {
  */
 export function getFrontierBackend(backendId) {
   return (state.frontierBackends || []).find((b) => b.id === backendId) || null;
+}
+
+// ---------------------------------------------------------------------------
+// Routing log — in-memory ring buffer, resets on restart, never persisted
+// ---------------------------------------------------------------------------
+
+const LOG_MAX = 200;
+const _log = [];
+
+export function appendOrchestrationLog(entry) {
+  _log.push(entry);
+  if (_log.length > LOG_MAX) _log.shift();
+}
+
+export function getOrchestrationLog() {
+  return [..._log].reverse(); // newest first
+}
+
+// ---------------------------------------------------------------------------
+// Simulate — dry-run rule evaluation without dispatching
+// ---------------------------------------------------------------------------
+
+export function simulateRoute(routeId, body) {
+  const route = (state.orchestrationRoutes || []).find((r) => r.id === routeId);
+  if (!route) return null;
+
+  const trace = [];
+  let matched = null;
+
+  for (const rule of (route.rules || [])) {
+    const condResults = (rule.conditions || []).map((c) => ({
+      ...c,
+      result: evaluateCondition(c, body)
+    }));
+    const ruleMatched = condResults.length > 0 && condResults.every((c) => c.result);
+    trace.push({ ruleId: rule.id, conditions: condResults, matched: ruleMatched });
+    if (ruleMatched && !matched) {
+      matched = { backend: rule.backend, ruleId: rule.id };
+    }
+  }
+
+  const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+  const hasToolChoice = body.tool_choice !== undefined && body.tool_choice !== null;
+
+  return {
+    routeId: route.id,
+    routeName: route.name,
+    resolvedBackend: matched ? matched.backend : route.defaultBackend,
+    ruleId: matched ? matched.ruleId : "default",
+    trace,
+    classifierConfigured: Boolean(route.classifierRule),
+    estimatedTokens: estimateTokens(body.messages),
+    toolsPresent: hasTools || hasToolChoice,
+    toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+    messageCount: Array.isArray(body.messages) ? body.messages.length : 0,
+  };
 }

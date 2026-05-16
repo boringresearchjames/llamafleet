@@ -22,7 +22,7 @@ import localModelsRouter from "./routes/local-models.js";
 import hubRouter from "./routes/hub.js";
 import systemRouter from "./routes/system.js";
 import orchestrationRouter from "./routes/orchestration.js";
-import { matchOrchestrationRoute, resolveBackend, getFrontierBackend } from "./lib/orchestration.js";
+import { matchOrchestrationRoute, resolveBackend, getFrontierBackend, appendOrchestrationLog } from "./lib/orchestration.js";
 import { proxyToFrontier } from "./lib/frontier.js";
 import { resolveInstanceByModelName } from "./lib/routing.js";
 import { proxyToInstance } from "./lib/proxy.js";
@@ -153,8 +153,58 @@ app.post("/v1/chat/completions", largeJsonOrch, async (req, res, next) => {
   }
 
   if (dispatchOk) {
+    const latencyMs = Date.now() - startedAt;
+    const hasTools = Array.isArray(req.body?.tools) && req.body.tools.length > 0;
     audit("orchestration.routed", {
-      route: route.name, backend, ruleId, latencyMs: Date.now() - startedAt
+      route: route.name, backend, ruleId, latencyMs
+    });
+    appendOrchestrationLog({
+      id: `log_${startedAt}`,
+      at: new Date(startedAt).toISOString(),
+      routeName: route.name,
+      ruleId,
+      backend,
+      latencyMs,
+      toolsPresent: hasTools || req.body?.tool_choice != null,
+      toolCount: Array.isArray(req.body?.tools) ? req.body.tools.length : 0,
+      messageCount: Array.isArray(req.body?.messages) ? req.body.messages.length : 0,
+      estimatedTokens: Math.ceil(
+        (Array.isArray(req.body?.messages) ? req.body.messages : [])
+          .reduce((s, m) => s + (typeof m?.content === "string" ? m.content.length : 0), 0) / 4
+      ),
+      // Compact snapshot — enough to evaluate all condition types client-side
+      requestSnapshot: {
+        model: req.body?.model,
+        tool_choice: req.body?.tool_choice ?? null,
+        tools: (Array.isArray(req.body?.tools) ? req.body.tools : [])
+          .map(t => ({ function: { name: t?.function?.name ?? "" } })),
+        messages: (Array.isArray(req.body?.messages) ? req.body.messages : [])
+          .slice(-5)
+          .map(m => {
+            // Flatten array content to text
+            let content;
+            if (typeof m.content === "string") {
+              content = m.content.slice(0, 400);
+            } else if (Array.isArray(m.content)) {
+              const text = m.content.filter(p => p.type === "text").map(p => p.text || "").join(" ");
+              content = text ? text.slice(0, 400) : "[image/multi-part]";
+            } else {
+              content = null;
+            }
+            // Capture actual tool calls made by the assistant
+            const toolCalls = Array.isArray(m.tool_calls)
+              ? m.tool_calls.map(tc => ({
+                  name: tc.function?.name ?? "",
+                  args: (tc.function?.arguments ?? "").slice(0, 120)
+                }))
+              : null;
+            return {
+              role: m.role,
+              content,
+              ...(toolCalls?.length ? { toolCalls } : {})
+            };
+          })
+      }
     });
   }
 });

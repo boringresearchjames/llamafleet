@@ -8,6 +8,43 @@ One bearer token (`API_AUTH_TOKEN`) gates the entire dashboard and API. There is
 
 ---
 
+## Frontier API key storage
+
+If you configure frontier backends (Copilot, OpenRouter, or any OpenAI-compatible API), their API keys are **stored in plaintext** inside `state.json` (default: `apps/api/data/state.json`).
+
+**What is protected:**
+- The browser and API clients never receive the real key. Every API response replaces it with `"••••"`. The key is read server-side only and injected directly into outgoing `Authorization` headers.
+
+**What is not protected:**
+- The key is plaintext on disk. Anyone with read access to `state.json` can extract it.
+- Backups, `git status` accidents, or log captures of the file will include the key in plaintext.
+
+**Recommended mitigations:**
+
+```bash
+# Restrict state.json to the service user only (run as the user owning the process)
+chmod 600 apps/api/data/state.json
+# Or if deployed via systemd under a dedicated user:
+chmod 600 /home/<serviceuser>/llamafleet/data/api/state.json
+```
+
+- Add `data/` to `.gitignore` if you version-control your config. It is already listed there by default.
+- Use a scoped API key with the minimum required permissions from your frontier provider (e.g. an OpenRouter key with a spend limit, not your primary Copilot token).
+- Rotate the key in the Frontier Backends UI if you suspect exposure — LlamaFleet preserves the old key if the field is left blank on edit, so you must actively supply a new value to rotate it.
+
+**Preferred: keep the key off disk entirely using an env var reference.**
+In the API Key field, enter `$MY_VAR_NAME` instead of the real key. LlamaFleet resolves it from `process.env` at request time — `state.json` stores only the variable name, never the secret:
+
+```bash
+# In your environment file (e.g. /etc/llamafleet/llamafleet.env)
+OPENROUTER_KEY=sk-or-...
+COPILOT_TOKEN=...
+```
+
+Then set the API Key field to `$OPENROUTER_KEY`. This is the same pattern used for `API_AUTH_TOKEN` and `BRIDGE_AUTH_TOKEN`.
+
+---
+
 ## Recommended deployment
 
 **Minimum baseline:**
@@ -39,6 +76,7 @@ One bearer token (`API_AUTH_TOKEN`) gates the entire dashboard and API. There is
 - **No rate limiting** — handle at the proxy or firewall layer.
 - **No audit log for API calls** — only instance lifecycle events (start, stop, restart) are recorded.
 - **CORS defaults to `*`** — set `CORS_ORIGIN` to your specific origin if the dashboard is served over a network.
+- **Frontier API keys stored in plaintext** — `state.json` contains API keys in cleartext. Protect the file with filesystem permissions and avoid including it in backups or version control. See the section above.
 
 ---
 

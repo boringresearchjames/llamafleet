@@ -2310,6 +2310,192 @@ lf-host-stats {
 
 .orch-section { margin-bottom: 28px; }
 .orch-section-frontier { border-top: 1px solid var(--border); padding-top: 24px; }
+.orch-section-log { border-top: 1px solid var(--border); padding-top: 24px; }
+
+/* Routing log table */
+.orch-log-table { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.orch-log-header {
+  display: grid;
+  grid-template-columns: 24px 56px 1fr 100px 120px 64px 1fr 80px;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.orch-log-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(13, 19, 35, 0.3);
+  transition: border-color 0.15s;
+}
+.orch-log-row:hover { border-color: var(--accent); }
+.orch-log-row-open { border-color: rgba(92,165,255,0.4); }
+.orch-log-row-main {
+  display: grid;
+  grid-template-columns: 24px 56px 1fr 100px 120px 64px 1fr 80px;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 10px;
+}
+.orch-log-row-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 10px;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.orch-log-row-toggle:hover { color: var(--fg); }
+.orch-log-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.orch-log-meta { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+
+/* Expanded snapshot */
+.orch-log-expanded {
+  border-top: 1px solid var(--border);
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.orch-snap-section { display: flex; flex-direction: column; gap: 4px; }
+.orch-snap-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.orch-snap-tools { display: flex; flex-wrap: wrap; gap: 4px; }
+.orch-snap-tool {
+  display: inline-block;
+  font-size: 12px;
+  font-family: monospace;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(92,165,255,0.1);
+  color: #7ec8e3;
+  border: 1px solid rgba(92,165,255,0.2);
+}
+.orch-snap-none { font-size: 12px; color: var(--muted); font-style: italic; }
+.orch-snap-msgs { display: flex; flex-direction: column; gap: 4px; }
+.orch-snap-msg { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; }
+.orch-snap-role {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  min-width: 52px;
+  text-align: center;
+}
+.orch-snap-role-system    { background: rgba(168,85,247,0.15); color: #c084fc; }
+.orch-snap-role-user      { background: rgba(77,208,110,0.15); color: #4dd06e; }
+.orch-snap-role-assistant { background: rgba(92,165,255,0.12); color: #7ec8e3; }
+.orch-snap-role-tool      { background: rgba(251,146,60,0.15); color: #fb923c; }
+.orch-snap-turn-latest { font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #7ec8e3; background: rgba(92,165,255,0.12); border-radius: 3px; padding: 1px 5px; flex-shrink: 0; }
+.orch-snap-content { color: var(--muted); line-height: 1.5; word-break: break-word; }
+.orch-snap-msg-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.orch-snap-toolcalls { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); }
+.orch-snap-args { font-family: monospace; font-size: 10px; color: var(--muted); opacity: 0.7; }
+
+/* Badges and chips */
+.orch-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.orch-badge-default { background: rgba(120,120,120,0.2); color: var(--muted); }
+.orch-badge-rule { background: rgba(92,165,255,0.15); color: #7ec8e3; }
+.orch-badge-local { background: rgba(77,208,110,0.15); color: #4dd06e; }
+.orch-badge-frontier { background: rgba(168,85,247,0.2); color: #c084fc; }
+.orch-badge-config { background: rgba(251,146,60,0.15); color: #fb923c; }
+.orch-badge-unknown { background: rgba(120,120,120,0.2); color: var(--muted); }
+
+.orch-chip {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.07);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.orch-chip-pass { background: rgba(77,208,110,0.15); color: #4dd06e; }
+.orch-chip-fail { background: rgba(239,68,68,0.15); color: #f87171; }
+
+/* Simulate dialog */
+.orch-simulate-dialog { max-width: 600px; width: 100%; }
+.orch-dialog-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+
+.orch-sim-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.orch-sim-trace { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.orch-sim-rule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+.orch-sim-matched { border-color: #4dd06e; background: rgba(77,208,110,0.07); }
+.orch-sim-miss { opacity: 0.6; }
+.orch-sim-icon { font-size: 14px; font-weight: 700; flex-shrink: 0; }
+.orch-sim-conditions { flex: 1; display: flex; gap: 4px; flex-wrap: wrap; }
+.orch-sim-arrow { white-space: nowrap; font-size: 12px; }
+.orch-sim-verdict {
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+}
+.orch-sim-same { background: rgba(77,208,110,0.08); border-color: #4dd06e; color: #4dd06e; }
+.orch-sim-changed { background: rgba(251,146,60,0.08); border-color: #fb923c; color: #fb923c; }
+
+/* Rule tester panel (inside route dialog) */
+.orch-test-panel {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  margin-top: 4px;
+}
+.orch-test-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+.orch-test-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+}
+.orch-test-entry {
+  display: grid;
+  grid-template-columns: 56px 100px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(13,19,35,0.3);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+.orch-test-entry:hover { border-color: var(--accent); }
+.orch-test-entry-selected { border-color: var(--accent); background: rgba(92,165,255,0.07); }
+.orch-test-entry-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.orch-test-entry-route { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.orch-test-entry-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.orch-test-result { margin-top: 4px; }
 
 .orch-section-header {
   display: flex;
@@ -2426,6 +2612,8 @@ lf-host-stats {
 .orch-label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; }
 .orch-label-grow { flex: 1; }
 .orch-label-half { flex: 1; min-width: 0; }
+.orch-field-hint { margin: 2px 0 6px; font-size: 11px; color: var(--muted); font-weight: 400; }
+.orch-field-hint code { font-size: 11px; background: rgba(255,255,255,0.07); border-radius: 3px; padding: 1px 4px; }
 .orch-hint { font-size: 11px; font-weight: 400; color: var(--muted); }
 .orch-label-text { font-size: 13px; font-weight: 600; }
 .orch-input {
