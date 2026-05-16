@@ -377,6 +377,58 @@ router.post("/instances/:id/kill", async (req, res) => {
   }
 });
 
+router.patch("/instances/:id", (req, res) => {
+  const instance = state.instances.find((x) => x.id === req.params.id);
+  if (!instance) return res.status(404).json({ error: "instance not found" });
+
+  const body = req.body || {};
+  const updatable = [
+    "runtimeArgs", "contextLength", "modelParallel", "maxInflightRequests",
+    "queueLimit", "headersTimeoutMs", "restartPolicy", "modelTtlSeconds"
+  ];
+
+  let changed = false;
+  if ("runtimeArgs" in body) {
+    instance.runtime = { ...instance.runtime, serverArgs: parseRuntimeArgs(body.runtimeArgs) };
+    changed = true;
+  }
+  if ("contextLength" in body) {
+    instance.contextLength = parseContextLength(body.contextLength);
+    changed = true;
+  }
+  if ("modelParallel" in body) {
+    instance.modelParallel = parseOptionalPositiveInteger(body.modelParallel);
+    changed = true;
+  }
+  if ("maxInflightRequests" in body) {
+    instance.maxInflightRequests = parsePositiveInteger(body.maxInflightRequests, 4, 1, 1024);
+    changed = true;
+  }
+  if ("queueLimit" in body) {
+    instance.queueLimit = parsePositiveInteger(body.queueLimit, 64, 1, 100000);
+    changed = true;
+  }
+  if ("headersTimeoutMs" in body) {
+    instance.headersTimeoutMs = parseOptionalPositiveInteger(body.headersTimeoutMs);
+    changed = true;
+  }
+  if ("modelTtlSeconds" in body) {
+    instance.modelTtlSeconds = parseOptionalPositiveInteger(body.modelTtlSeconds);
+    changed = true;
+  }
+  if ("restartPolicy" in body) {
+    instance.restartPolicy = parseRestartPolicy(body.restartPolicy);
+    changed = true;
+  }
+
+  if (!changed) return res.status(400).json({ error: "no updatable fields provided", updatable });
+
+  instance.updatedAt = now();
+  saveState(state);
+  audit("instance.patch", { instanceId: instance.id });
+  return res.json({ ...instance, note: "restart required to apply runtime changes" });
+});
+
 router.delete("/instances/:id", async (req, res) => {
   const instance = state.instances.find((x) => x.id === req.params.id);
   if (!instance) return res.status(404).json({ error: "instance not found" });
