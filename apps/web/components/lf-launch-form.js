@@ -349,6 +349,8 @@ class LfLaunchForm extends HTMLElement {
               <option value="16384">16384</option>
               <option value="32768">32768</option>
               <option value="65536">65536</option>
+              <option value="131072">131072 (128K)</option>
+              <option value="262144">262144 (256K)</option>
               <option value="custom">Custom</option>
             </select>
           </label>
