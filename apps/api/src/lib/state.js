@@ -10,6 +10,7 @@ export const defaultState = {
   audit: [],
   orchestrationRoutes: [],
   frontierBackends: [],
+  modelDefaults: [],
   settings: {
     security: {
       api: { requireApiKey: true },
@@ -60,6 +61,7 @@ function migrateState(raw) {
   next.sessions = Array.isArray(next.sessions) ? next.sessions : [];
   next.orchestrationRoutes = Array.isArray(next.orchestrationRoutes) ? next.orchestrationRoutes : [];
   next.frontierBackends = Array.isArray(next.frontierBackends) ? next.frontierBackends : [];
+  next.modelDefaults = Array.isArray(next.modelDefaults) ? next.modelDefaults : [];
   return next;
 }
 

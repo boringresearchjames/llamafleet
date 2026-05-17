@@ -205,4 +205,30 @@ router.delete("/users/:username", requireAdminToken, (req, res) => {
   return res.json({ success: true });
 });
 
+// ── Model default args ───────────────────────────────────────────────────────
+
+router.get("/model-defaults", requireAdminToken, (_req, res) => {
+  res.json({ data: state.modelDefaults || [] });
+});
+
+router.put("/model-defaults", requireAdminToken, (req, res) => {
+  const modelId = String(req.body?.modelId || "").trim();
+  if (!modelId) return res.status(400).json({ error: "modelId required" });
+  const serverArgs = typeof req.body?.serverArgs === "string" ? req.body.serverArgs.trim() : "";
+  state.modelDefaults = state.modelDefaults || [];
+  const idx = state.modelDefaults.findIndex((d) => d.modelId === modelId);
+  const entry = { modelId, serverArgs };
+  if (idx >= 0) { state.modelDefaults[idx] = entry; } else { state.modelDefaults.push(entry); }
+  saveState(state);
+  return res.json(entry);
+});
+
+router.delete("/model-defaults", requireAdminToken, (req, res) => {
+  const modelId = String(req.query.modelId || "").trim();
+  if (!modelId) return res.status(400).json({ error: "modelId required" });
+  state.modelDefaults = (state.modelDefaults || []).filter((d) => d.modelId !== modelId);
+  saveState(state);
+  return res.json({ ok: true });
+});
+
 export default router;

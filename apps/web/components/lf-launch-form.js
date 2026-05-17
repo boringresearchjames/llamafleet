@@ -244,6 +244,24 @@ function renderGpuSelect({ data = [], warning, diagnostics } = {}) {
   toast(`Loaded ${data.length} GPUs`);
 }
 
+async function autoDetectModelDefaults() {
+  const modelPath = ($('launchInstanceModel')?.value || '').trim();
+  const argsInput = $('launchServerArgs');
+  if (!argsInput || !modelPath) return;
+  try {
+    const data = await api('/v1/model-defaults');
+    const defaults = Array.isArray(data?.data) ? data.data : [];
+    const match = defaults.find((d) => d.modelId === modelPath);
+    if (match) {
+      argsInput.value = match.serverArgs || '';
+      argsInput.dataset.defaultsFor = modelPath;
+    } else if (argsInput.dataset.defaultsFor) {
+      argsInput.value = '-b 2048 -ub 1024 -ngl 999 --flash-attn on';
+      delete argsInput.dataset.defaultsFor;
+    }
+  } catch (_) { /* best-effort */ }
+}
+
 async function autoDetectMmproj() {
   const modelPath = ($("launchInstanceModel")?.value || "").trim();
   const mmprojInput = $("launchMmproj");
@@ -380,7 +398,7 @@ class LfLaunchForm extends HTMLElement {
             <small class="launch-field-help">Max ms to wait for first response token. Increase for large/slow models.</small>
           </label>
           <label class="launch-field launch-field-span-3">
-            Server Args
+            <span style="display:flex;align-items:center;justify-content:space-between;width:100%">Server Args <button id="saveModelDefaultArgs" type="button" class="copy" style="padding:2px 8px;font-size:0.72em;height:auto">Save as default</button></span>
             <input id="launchServerArgs" type="text" value="-b 2048 -ub 1024 -ngl 999 --flash-attn on" placeholder="e.g. --flash-attn on -b 2048" class="launch-input" />
             <small class="launch-field-help">Extra flags passed directly to llama-server. Separate with spaces.</small>
           </label>
@@ -417,7 +435,7 @@ class LfLaunchForm extends HTMLElement {
     store.subscribe('gpuHardware', renderGpuSelect);
     setTimeout(() => store.refresh('gpuHardware').catch(() => {}), 300);
     setTimeout(() => loadModelList("launchInstanceModel"), 450);
-    $('launchInstanceModel').addEventListener('change', () => autoDetectMmproj());
+    $('launchInstanceModel').addEventListener('change', () => { void autoDetectMmproj(); void autoDetectModelDefaults(); });
     applyRestartPolicyUi();
   }
 
@@ -444,7 +462,18 @@ class LfLaunchForm extends HTMLElement {
     };
 
     $("launchRestartMode").onchange = () => applyRestartPolicyUi();
-
+    $('saveModelDefaultArgs').onclick = async () => {
+      const modelPath = ($('launchInstanceModel')?.value || '').trim();
+      if (!modelPath) { toast('Select a model first'); return; }
+      const serverArgs = ($('launchServerArgs')?.value || '').trim();
+      try {
+        await api('/v1/model-defaults', { method: 'PUT', body: JSON.stringify({ modelId: modelPath, serverArgs }) });
+        $('launchServerArgs').dataset.defaultsFor = modelPath;
+        toast(`Default args saved for ${modelPath.split('/').pop().split('\\').pop()}`);
+      } catch (error) {
+        toast(`Save default failed: ${error.message}`);
+      }
+    };
     $("launchInstanceModel").onchange = () => {
       const nameInput = $("launchName");
       if (String(nameInput.value || "").trim()) return;
