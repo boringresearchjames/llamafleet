@@ -179,23 +179,22 @@
     <dialog id="instanceTestDialog" class="instance-test-dialog">
       <form method="dialog" class="instance-test-form" id="instanceTestForm">
         <div class="instance-test-header">
-          <h3 id="instanceTestTitle">Instance Diagnostic Test</h3>
-          <button type="button" id="instanceTestClose" class="instance-test-close" aria-label="Close diagnostic dialog">&#x2715;</button>
+          <h3 id="instanceTestTitle">Instance Chat</h3>
+          <button type="button" id="instanceTestClose" class="instance-test-close" aria-label="Close dialog">&#x2715;</button>
         </div>
         <pre id="instanceTestMeta" class="instance-test-meta">Target: -</pre>
 
-        <label class="launch-field">
-          Prompt
-          <textarea id="instanceTestPrompt" class="instance-test-input" rows="4">Reply exactly with: OK</textarea>
-        </label>
+        <div id="instanceTestMessages" class="chat-messages"></div>
 
-        <div class="instance-test-actions">
-          <button type="button" id="instanceTestSend">Send Test Prompt</button>
-          <button type="button" id="instanceTestSpeedTest" class="copy">Speed Test (TPS)</button>
-          <button type="button" id="instanceTestReset" class="copy">Reset Prompt</button>
+        <div class="chat-input-row">
+          <textarea id="instanceTestPrompt" class="chat-input" rows="2" placeholder="Type a message… (Shift+Enter for newline)"></textarea>
+          <button type="button" id="instanceTestSend">Send</button>
         </div>
 
-        <pre id="instanceTestResult" class="instance-test-result">No request sent yet.</pre>
+        <div class="instance-test-actions">
+          <button type="button" id="instanceTestSpeedTest" class="copy">Speed Test (TPS)</button>
+          <button type="button" id="instanceTestClear" class="copy">Clear Chat</button>
+        </div>
       </form>
     </dialog>
 

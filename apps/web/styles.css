@@ -1095,7 +1095,7 @@ pre {
 }
 
 .instance-test-dialog {
-  width: min(720px, calc(100vw - 24px));
+  width: min(800px, calc(100vw - 24px));
   border: 1px solid var(--border);
   border-radius: 14px;
   background: linear-gradient(165deg, rgba(8, 12, 24, 0.995), rgba(13, 19, 35, 0.995));
@@ -1145,24 +1145,97 @@ pre {
   font-size: 11px;
 }
 
-.instance-test-input {
-  min-height: 96px;
+/* ── Chat messages ── */
+
+.chat-messages {
+  height: 340px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 6px;
+  border: 1px solid rgba(159, 176, 216, 0.15);
+  border-radius: 8px;
+  background: rgba(3, 7, 16, 0.88);
+  margin-bottom: 8px;
+}
+
+.chat-msg {
+  display: flex;
+  flex-direction: column;
+  max-width: 88%;
+}
+
+.chat-msg-user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.chat-msg-assistant {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+.chat-msg-role {
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.chat-msg-bubble {
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-msg-user .chat-msg-bubble {
+  background: rgba(92, 165, 255, 0.16);
+  border: 1px solid rgba(92, 165, 255, 0.28);
+  color: #cce4ff;
+}
+
+.chat-msg-assistant .chat-msg-bubble {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #eaf2ff;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-bottom: 8px;
+}
+
+.chat-input {
+  flex: 1;
+  min-height: 56px;
+  max-height: 120px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.chat-input:focus {
+  outline: none;
+  border-color: rgba(92, 165, 255, 0.5);
 }
 
 .instance-test-actions {
   display: flex;
   gap: 8px;
-  margin-top: 10px;
   flex-wrap: wrap;
-}
-
-.instance-test-result {
-  margin-top: 10px;
-  max-height: 320px;
-  white-space: pre-wrap;
-  color: #eaf2ff;
-  background: rgba(3, 7, 16, 0.88);
-  border: 1px solid rgba(159, 176, 216, 0.3);
 }
 
 /* ── Model Routing Map ──────────────────────────────────── */
