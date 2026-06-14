@@ -251,7 +251,13 @@ function xmlToJsonValue(xml) {
   if (children.every(c => c.tag === "item")) {
     return children.map(c => xmlToJsonValue(c.content));
   }
-  // Named siblings → object (duplicate names become arrays)
+  // Single non-item child: M3 may have emitted unescaped HTML/code inside a
+  // string-typed parameter (e.g. <content><script>…</script></content>).
+  // Treat the whole thing as a string by stripping all tags.
+  if (children.length === 1) {
+    return text.replace(/<[^>]*>/g, "").trim();
+  }
+  // 2+ distinct named siblings → object (duplicate names become arrays)
   const obj = {};
   for (const { tag, content } of children) {
     const val = xmlToJsonValue(content);
