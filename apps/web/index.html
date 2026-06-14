@@ -77,6 +77,66 @@
       <section class="card span-12">
         <div class="section-header">
           <div>
+            <h2>Context Compression</h2>
+            <p class="card-subtitle">Shrink tool outputs, logs, JSON, and long file reads before they reach the model. Deterministic and cache-safe &mdash; cuts prompt tokens (and prefill latency) without changing model quality.</p>
+          </div>
+          <div id="compressionStats" class="status-chip">Compression: checking…</div>
+        </div>
+        <div class="compression-grid">
+          <label class="launch-field">
+            Enabled
+            <select id="compressionEnabled" class="launch-input">
+              <option value="false">Off</option>
+              <option value="true">On</option>
+            </select>
+          </label>
+          <label class="launch-field">
+            Max Log Lines
+            <input id="compressionMaxLogLines" type="number" min="10" max="5000" step="10" class="launch-input" />
+          </label>
+          <label class="launch-field">
+            Max JSON Array Items
+            <input id="compressionMaxJsonArrayItems" type="number" min="1" max="5000" class="launch-input" />
+          </label>
+          <label class="launch-field">
+            Max Code Lines
+            <input id="compressionMaxCodeLines" type="number" min="20" max="20000" step="10" class="launch-input" />
+          </label>
+          <label class="launch-field">
+            Code Head Lines
+            <input id="compressionCodeHeadLines" type="number" min="5" max="10000" class="launch-input" />
+          </label>
+          <label class="launch-field">
+            Code Tail Lines
+            <input id="compressionCodeTailLines" type="number" min="5" max="10000" class="launch-input" />
+          </label>
+          <label class="launch-field">
+            Max Search Results
+            <input id="compressionMaxSearchResults" type="number" min="1" max="1000" class="launch-input" />
+          </label>
+          <label class="launch-field">
+            Compress Diffs
+            <select id="compressionCompressDiffs" class="launch-input">
+              <option value="true">On</option>
+              <option value="false">Off</option>
+            </select>
+          </label>
+          <label class="launch-field">
+            Strip HTML
+            <select id="compressionStripHtml" class="launch-input">
+              <option value="true">On</option>
+              <option value="false">Off</option>
+            </select>
+          </label>
+          <div class="launch-actions-row">
+            <button id="saveCompression" type="button" class="launch-start">Save</button>
+          </div>
+        </div>
+        <div id="compressionLiveStats" class="compression-live-stats" hidden></div>
+      </section>
+      <section class="card span-12">
+        <div class="section-header">
+          <div>
             <h2>Model Orchestration</h2>
             <p class="card-subtitle">Route virtual model names to local instances or frontier APIs based on rules. Save on API costs by sending tool calls and agentic loops to local models.</p>
           </div>

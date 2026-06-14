@@ -27,6 +27,7 @@ Every instance is reachable through a single **OpenAI-compatible API** at `http:
 - Log viewer with auto-tail and clone-setup action per instance
 - Model Routing dashboard section — visual overview of which instances form a least-loaded pool vs. solo routes, with one-click copy of each pinned model name
 - Speed test (TPS) per instance — uses server-side `llama.cpp` timing data (`predicted_per_second`) for accurate generation and prefill throughput measurement
+- **Context compression** — deterministic pre-proxy compression of tool and user messages (log dedup, JSON compaction, diff stripping, HTML stripping, ANSI removal). Runs transparently before each forwarded request; typically cuts 20–50% of tool-output tokens in agentic workloads, which directly reduces prefill latency and extends context window headroom
 
 LlamaFleet uses GGUF models via `llama-server` directly — no LM Studio or Ollama required. Works on NVIDIA (including pre-Ampere V100/10xx/20xx), AMD, and CPU.
 
@@ -284,7 +285,59 @@ Click **Test rules →** on any log row to open the route editor with that reque
 
 ---
 
-## Architecture
+## Context Compression
+
+LlamaFleet can compress tool and user messages **before they are forwarded to `llama-server`**, reducing prompt token count and prefill time without changing model behaviour.
+
+Compression is purely deterministic — the same input always produces the same output — so llama.cpp's **KV prefix cache still hits** on repeated history. It is transparent: clients see unmodified OpenAI-format responses; only the llama-server inbound payload is smaller.
+
+### What gets compressed
+
+The compressor runs a detection pipeline on every `tool` and `user` message. It picks the most specific applicable compressor:
+
+| Content type | Compressor | What it does |
+|---|---|---|
+| JSON (`{…}`, `[…]`) | JSON compactor | Drops `null` fields, replaces oversized arrays with adaptive head/tail/sampled selection (30% head, 15% tail, 55% uniform middle), truncates strings > 2 000 chars, removes base64 blobs |
+| Unified diff (`diff --git …`) | Diff compressor | Keeps `+++`/`---` headers and `+`/`-` changed lines; drops context lines. Skips lockfile hunks entirely (`package-lock.json`, `yarn.lock`, `Cargo.lock`, etc.) |
+| Source code (long files) | Code truncator | Keeps head + tail (`codeHeadLines` + `codeTailLines`), drops middle with a count marker |
+| Log / command output | Log deduplicator | Four stages: (1) consecutive identical-line dedup, (2) pattern-normalised dedup for build-output runs like `[N%] Building CXX…`, (3) blank-line collapse, (4) head + tail with important-line preservation (`ERROR`/`FATAL`/`WARN`/`panic` always kept) |
+| HTML (web fetch results) | HTML stripper | Removes `<script>` and `<style>` blocks, strips all tags, decodes entities; result may then pass through the log or search compressor |
+| Numbered search results | Search trimmer | Keeps top-N results, notes how many were dropped |
+| ANSI escape codes | Strip (always) | Applied first on every string, regardless of other compressors |
+
+`assistant` and `system` messages are never touched. Tool schema definitions (`tools[]`) are never touched.
+
+### Realistic savings
+
+| Workload | Typical reduction |
+|---|---|
+| Repetitive build logs (make, cargo, cmake) | 60–95% |
+| Long file reads | 50–80% |
+| HTML web-fetch results | 50–85% |
+| JSON arrays (search results, API responses) | 30–60% |
+| Git diffs with context lines | 40–70% |
+| Mixed agentic session (code agent, 60k tool tokens) | 15–30% overall |
+| Pure conversation, no tools | 0% |
+
+For a long MiniMax M3 session at 128k context (~120 tps prefill), saving 15k tokens cuts approximately **125 seconds** from a single prefill pass.
+
+### Configuration
+
+All settings live in the **Orchestration** tab → **Context Compression** card and are also accessible via `GET/PUT /v1/settings/compression`.
+
+| Setting | Default | Description |
+|---|---|---|
+| Enabled | `false` | Master switch. Off = compressor is a no-op. |
+| Compress Diffs | `true` | Strip context lines from unified diffs, skip lockfile hunks. |
+| Strip HTML | `true` | Strip tags and scripts from HTML content. |
+| Max Log Lines | `120` | Lines to keep after dedup stages (head 35% + tail 35% + important). |
+| Max JSON Array Items | `24` | Maximum array elements after adaptive sampling. |
+| Max Code Lines | `200` | Source files longer than this are head+tail trimmed. |
+| Code Head Lines | `60` | Lines kept from the start of a trimmed file. |
+| Code Tail Lines | `40` | Lines kept from the end of a trimmed file. |
+| Max Search Results | `12` | Maximum numbered results to forward. |
+
+The live stats bar at the top of the card shows cumulative token savings across all running instances since the last restart.
 
 LlamaFleet is two core Node.js services plus an optional bridge router:
 

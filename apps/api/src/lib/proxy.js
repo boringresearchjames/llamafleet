@@ -2,6 +2,7 @@ import { Readable } from "stream";
 import { state, saveState } from "./state.js";
 import { audit } from "./audit.js";
 import { now } from "./utils.js";
+import { compressMessages, mergeCompressionConfig } from "./compress.js";
 
 // ---------------------------------------------------------------------------
 // Per-request metrics
@@ -496,8 +497,35 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
       // Sanitize any <minimax:tool_call> XML that may be in assistant message content
       // from a prior exchange. peg-native chokes on raw XML in incoming message history.
       const sanitizedMessages = sanitizeMessagesForMinimax(req.body.messages);
-      const reqBody = sanitizedMessages !== req.body.messages
-        ? { ...req.body, messages: sanitizedMessages }
+
+      // Context compression — deterministic, cache-safe, flag-gated.
+      // Runs after sanitize so it never interferes with the M3 XML transform.
+      const compressionCfg = mergeCompressionConfig(state.settings?.compression);
+      const { messages: compressedMessages, stats: compressionStats } =
+        compressMessages(sanitizedMessages, compressionCfg);
+      if (compressionCfg.enabled && compressionStats.compressed > 0) {
+        const saved = compressionStats.tokensIn - compressionStats.tokensOut;
+        if (saved > 0) {
+          console.log(
+            `[compress] instanceId=${instance?.id} ` +
+            `compressed=${compressionStats.compressed} msgs ` +
+            `tokens=${compressionStats.tokensIn}→${compressionStats.tokensOut} ` +
+            `saved~${saved}`
+          );
+          // Track savings on instance for the UI
+          if (instance) {
+            instance.totalCompressionTokensSaved =
+              (Number(instance.totalCompressionTokensSaved) || 0) + saved;
+            instance.totalCompressionTokensIn =
+              (Number(instance.totalCompressionTokensIn) || 0) + compressionStats.tokensIn;
+            instance.totalCompressionRuns =
+              (Number(instance.totalCompressionRuns) || 0) + 1;
+          }
+        }
+      }
+
+      const reqBody = compressedMessages !== req.body.messages
+        ? { ...req.body, messages: compressedMessages }
         : req.body;
       body = JSON.stringify(reqBody);
       // Final defensive sweep: scrub any remaining <minimax:tool_call> XML

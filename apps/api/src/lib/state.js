@@ -22,6 +22,17 @@ export const defaultState = {
       lastImportedHash: "",
       lastDryRunAt: null,
       lastDryRunHash: ""
+    },
+    compression: {
+      enabled: false,
+      maxLogLines: 120,
+      maxJsonArrayItems: 24,
+      maxCodeLines: 200,
+      codeHeadLines: 60,
+      codeTailLines: 40,
+      maxSearchResults: 12,
+      compressDiffs: true,
+      stripHtml: true
     }
   },
   users: [],
@@ -56,6 +67,18 @@ function migrateState(raw) {
     lastImportedHash: next.settings.configSync?.lastImportedHash || "",
     lastDryRunAt: next.settings.configSync?.lastDryRunAt || null,
     lastDryRunHash: next.settings.configSync?.lastDryRunHash || ""
+  };
+  const c = next.settings.compression || {};
+  next.settings.compression = {
+    enabled: typeof c.enabled === "boolean" ? c.enabled : false,
+    maxLogLines: Number(c.maxLogLines) > 0 ? Number(c.maxLogLines) : 120,
+    maxJsonArrayItems: Number(c.maxJsonArrayItems) > 0 ? Number(c.maxJsonArrayItems) : 24,
+    maxCodeLines: Number(c.maxCodeLines) > 0 ? Number(c.maxCodeLines) : 200,
+    codeHeadLines: Number(c.codeHeadLines) > 0 ? Number(c.codeHeadLines) : 60,
+    codeTailLines: Number(c.codeTailLines) > 0 ? Number(c.codeTailLines) : 40,
+    maxSearchResults: Number(c.maxSearchResults) > 0 ? Number(c.maxSearchResults) : 12,
+    compressDiffs: typeof c.compressDiffs === "boolean" ? c.compressDiffs : true,
+    stripHtml: typeof c.stripHtml === "boolean" ? c.stripHtml : true
   };
   next.users = Array.isArray(next.users) ? next.users : [];
   next.sessions = Array.isArray(next.sessions) ? next.sessions : [];

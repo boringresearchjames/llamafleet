@@ -46,6 +46,40 @@ router.put("/settings/security", requireAdminToken, (req, res) => {
   return res.json(state.settings.security);
 });
 
+// ── Context compression settings ─────────────────────────────────────────────
+
+router.get("/settings/compression", requireAdminToken, (_req, res) => {
+  res.json(state.settings.compression);
+});
+
+router.put("/settings/compression", requireAdminToken, (req, res) => {
+  const payload = req.body || {};
+  const current = state.settings.compression;
+
+  const clampInt = (value, fallback, min = 1, max = 100000) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.max(min, Math.min(max, Math.floor(num)));
+  };
+
+  const asBool = (val, fallback) => typeof val === "boolean" ? val : fallback;
+  state.settings.compression = {
+    enabled:          asBool(payload.enabled, current.enabled),
+    maxLogLines:      clampInt(payload.maxLogLines,      current.maxLogLines,      10,  5000),
+    maxJsonArrayItems:clampInt(payload.maxJsonArrayItems,current.maxJsonArrayItems, 1,  5000),
+    maxCodeLines:     clampInt(payload.maxCodeLines,     current.maxCodeLines,    20, 20000),
+    codeHeadLines:    clampInt(payload.codeHeadLines,    current.codeHeadLines,    5, 10000),
+    codeTailLines:    clampInt(payload.codeTailLines,    current.codeTailLines,    5, 10000),
+    maxSearchResults: clampInt(payload.maxSearchResults, current.maxSearchResults,  1,  1000),
+    compressDiffs:    asBool(payload.compressDiffs, current.compressDiffs),
+    stripHtml:        asBool(payload.stripHtml,     current.stripHtml),
+  };
+
+  saveState(state);
+  audit("settings.compression.update", { enabled: state.settings.compression.enabled });
+  return res.json(state.settings.compression);
+});
+
 // ── Config export / import / status ─────────────────────────────────────────
 
 router.get("/config/export.yaml", requireAdminToken, (_req, res) => {

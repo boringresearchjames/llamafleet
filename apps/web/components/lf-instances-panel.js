@@ -215,6 +215,15 @@ function renderInstanceData(data) {
         <div class="runtime-meta">ctx: ${inst.resolvedContextLength ? inst.resolvedContextLength.toLocaleString() : (inst.contextLength ? inst.contextLength.toLocaleString() : "auto")}${inst.ggufArchitecture ? ` &middot; arch: ${escapeHtml(inst.ggufArchitecture)}` : ''}</div>
         <div class="runtime-meta">runtime: ${escapeHtml(runtimeLabel)}</div>
         <div class="runtime-meta" title="${escapeHtml(Array.isArray(inst.runtime?.serverArgs) && inst.runtime.serverArgs.length > 0 ? inst.runtime.serverArgs.join(" ") : "(none)")}">args: ${escapeHtml(trimArgsModelPaths(Array.isArray(inst.runtime?.serverArgs) && inst.runtime.serverArgs.length > 0 ? inst.runtime.serverArgs.join(" ") : "(none)"))}</div>
+        ${(() => {
+          const runs  = Number(inst.totalCompressionRuns) || 0;
+          if (runs === 0) return '';
+          const saved = Number(inst.totalCompressionTokensSaved) || 0;
+          const tin   = Number(inst.totalCompressionTokensIn)    || 0;
+          const pct   = tin > 0 ? ` &middot; ${Math.round((saved / tin) * 100)}%` : '';
+          const fmtN  = n => n >= 1000 ? `~${(n/1000).toFixed(1)}k` : String(n);
+          return `<div class="runtime-meta" title="Context compression savings since instance start">&#x1F5DC;&#xFE0F; ${fmtN(saved)} saved &middot; ${runs} req${runs !== 1 ? 's' : ''}${pct}</div>`;
+        })()}
       </td>
       <td>${inst.port}</td>
       <td class="gpu-cell">${formatGpuStats(inst)}</td>

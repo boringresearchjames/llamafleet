@@ -45,6 +45,88 @@ async function refreshGlobalApiAccess() {
   }
 }
 
+// ── Context compression settings ─────────────────────────────────────────────
+
+function fmtTokens(n) {
+  if (n >= 1_000_000) return `~${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `~${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function setCompressionStatusLabel(cfg) {
+  const chip = $("compressionStats");
+  if (!chip) return;
+  chip.textContent = cfg?.enabled ? "Compression: On" : "Compression: Off";
+}
+
+function updateCompressionLiveStats(instances) {
+  const el = $("compressionLiveStats");
+  if (!el) return;
+  const all = Array.isArray(instances) ? instances : (store.get('instances') || []);
+  const totalSaved = all.reduce((s, i) => s + (Number(i.totalCompressionTokensSaved) || 0), 0);
+  const totalIn    = all.reduce((s, i) => s + (Number(i.totalCompressionTokensIn)    || 0), 0);
+  const totalRuns  = all.reduce((s, i) => s + (Number(i.totalCompressionRuns)         || 0), 0);
+  if (totalRuns === 0) { el.hidden = true; return; }
+  el.hidden = false;
+  const pct     = totalIn > 0 ? Math.round((totalSaved / totalIn) * 100) : 0;
+  const avgSaved = Math.round(totalSaved / totalRuns);
+  el.innerHTML =
+    `<span class="cls-item"><span class="cls-num">${fmtTokens(totalSaved)}</span><span class="cls-label">tokens saved</span></span>` +
+    `<span class="cls-sep">&middot;</span>` +
+    `<span class="cls-item"><span class="cls-num">${pct}%</span><span class="cls-label">reduction</span></span>` +
+    `<span class="cls-sep">&middot;</span>` +
+    `<span class="cls-item"><span class="cls-num">${totalRuns}</span><span class="cls-label">req${totalRuns !== 1 ? 's' : ''} compressed</span></span>` +
+    `<span class="cls-sep">&middot;</span>` +
+    `<span class="cls-item"><span class="cls-num">${fmtTokens(avgSaved)}</span><span class="cls-label">avg&thinsp;/&thinsp;req</span></span>`;
+}
+
+async function refreshCompressionSettings() {
+  if (!$("compressionEnabled")) return;
+  try {
+    const cfg = await api("/v1/settings/compression");
+    $("compressionEnabled").value = cfg.enabled ? "true" : "false";
+    $("compressionMaxLogLines").value = cfg.maxLogLines;
+    $("compressionMaxJsonArrayItems").value = cfg.maxJsonArrayItems;
+    $("compressionMaxCodeLines").value = cfg.maxCodeLines;
+    $("compressionCodeHeadLines").value = cfg.codeHeadLines;
+    $("compressionCodeTailLines").value = cfg.codeTailLines;
+    $("compressionMaxSearchResults").value = cfg.maxSearchResults;
+    if ($("compressionCompressDiffs")) $("compressionCompressDiffs").value = cfg.compressDiffs !== false ? "true" : "false";
+    if ($("compressionStripHtml"))     $("compressionStripHtml").value     = cfg.stripHtml     !== false ? "true" : "false";
+    setCompressionStatusLabel(cfg);
+  } catch (_) {
+    const chip = $("compressionStats");
+    if (chip) chip.textContent = "Compression: unknown";
+  }
+}
+
+if ($("saveCompression")) {
+  $("saveCompression").onclick = async () => {
+    try {
+      const payload = {
+        enabled:          $("compressionEnabled").value === "true",
+        maxLogLines:      Number($("compressionMaxLogLines").value),
+        maxJsonArrayItems:Number($("compressionMaxJsonArrayItems").value),
+        maxCodeLines:     Number($("compressionMaxCodeLines").value),
+        codeHeadLines:    Number($("compressionCodeHeadLines").value),
+        codeTailLines:    Number($("compressionCodeTailLines").value),
+        maxSearchResults: Number($("compressionMaxSearchResults").value),
+        compressDiffs:    $("compressionCompressDiffs")?.value !== "false",
+        stripHtml:        $("compressionStripHtml")?.value     !== "false",
+      };
+      const cfg = await api("/v1/settings/compression", {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+      setCompressionStatusLabel(cfg);
+      toast(`Compression ${cfg.enabled ? "enabled" : "disabled"}`);
+    } catch (error) {
+      toast(`Compression update failed: ${error.message}`);
+    }
+  };
+}
+
+
 $("openHelp").onclick = () => {
   const base = (settings.apiBase || "").trim().replace(/\/$/, "");
   if (!base) { toast("Set API Base URL first"); return; }
@@ -225,6 +307,8 @@ async function loadAboutInfo() {
 
 syncGlobalApiTokenInput();
 void refreshGlobalApiAccess();
+void refreshCompressionSettings();
+store.subscribe('instances', updateCompressionLiveStats);
 store.startPolling();
 initTabs();
 initTestDialog();
