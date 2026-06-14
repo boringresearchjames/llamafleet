@@ -246,7 +246,13 @@ function xmlToJsonValue(xml) {
   const text = (xml || "").trim();
   if (!text) return "";
   const children = extractXmlChildren(text);
-  if (!children) return text; // pure text node
+  if (!children) {
+    // Coerce boolean and numeric literals so schema validation passes.
+    if (text === "true")  return true;
+    if (text === "false") return false;
+    if (text !== "" && !Number.isNaN(Number(text))) return Number(text);
+    return text;
+  }
   // All <item> siblings → array
   if (children.every(c => c.tag === "item")) {
     return children.map(c => xmlToJsonValue(c.content));
