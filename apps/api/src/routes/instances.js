@@ -112,6 +112,12 @@ router.post("/instances/start", async (req, res) => {
   const modelParallel = parseOptionalPositiveInteger(req.body?.modelParallel);
   const headersTimeoutMs = parseOptionalPositiveInteger(req.body?.headersTimeoutMs);
   const restartPolicy = parseRestartPolicy(req.body?.restartPolicy);
+  const startupTimeoutMs = parsePositiveInteger(
+    req.body?.startupTimeoutMs,
+    Number(process.env.STARTUP_TIMEOUT_MS) || 180000,
+    1000,
+    7200000
+  );
 
   if (!name) {
     return res.status(400).json({ error: "name is required" });
@@ -173,7 +179,7 @@ router.post("/instances/start", async (req, res) => {
     port: launchPort,
     gpus: usesGpu ? launchGpus : [],
     contextLength,
-    startupTimeoutMs: 180000,
+    startupTimeoutMs,
     queueLimit,
     modelTtlSeconds,
     modelParallel,
@@ -209,6 +215,7 @@ router.post("/instances/start", async (req, res) => {
       hardware: runtimeBackend
     },
     contextLength,
+    startupTimeoutMs,
     maxInflightRequests,
     queueLimit,
     modelTtlSeconds,
@@ -298,7 +305,7 @@ router.post("/instances/:id/restart", async (req, res) => {
     port: instance.port,
     gpus: Array.isArray(instance.gpus) ? instance.gpus : [],
     contextLength: parseContextLength(instance.contextLength),
-    startupTimeoutMs: 180000,
+    startupTimeoutMs: instance.startupTimeoutMs || Number(process.env.STARTUP_TIMEOUT_MS) || 180000,
     queueLimit: instance.queueLimit || 64,
     modelTtlSeconds: instance.modelTtlSeconds || null,
     modelParallel: instance.modelParallel || null,

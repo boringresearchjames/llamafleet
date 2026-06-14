@@ -120,6 +120,110 @@ function parseMinimaxXmlToolCalls(content) {
   return toolCalls.length > 0 ? { textBefore, toolCalls } : null;
 }
 
+// ---------------------------------------------------------------------------
+// MiniMax-M3 tool call transformation
+// ---------------------------------------------------------------------------
+// MiniMax-M3 (llama.cpp PR #24523) emits tool calls in a different shape than
+// the older <minimax:tool_call> models: the wrapper is <tool_call>, arguments
+// are direct child tags (<filePath>val</filePath>) instead of
+// <parameter name="...">, and — due to the PR's incomplete detokenizer — every
+// XML fragment is wrapped in a "<]minimax[>[ ... ]" control-token marker, e.g.
+//   <]minimax[>[<tool_call>]<]minimax[>[<invoke name="write">]<]minimax[>[<filePath>globe.svg]...
+// llama-server's own chat parser then 500s with "Failed to parse input at pos
+// N: <]minimax[>...". These helpers strip the control tokens, reconstruct the
+// underlying XML, and parse it into OpenAI tool_calls.
+
+const MINIMAX_M3_CONTROL = "<]minimax[>";
+
+/**
+ * Detect MiniMax-M3 style tool-call markup (<invoke name="..."> not wrapped in
+ * the older <minimax:tool_call> tag).
+ */
+function hasMinimaxM3ToolCall(content) {
+  return typeof content === "string"
+    && content.includes("<invoke name=")
+    && !content.includes("<minimax:tool_call>");
+}
+
+/**
+ * Strip MiniMax-M3's "<]minimax[>[ fragment ]" control-token wrappers and
+ * reconstruct the underlying tool-call XML. Fragments without the control
+ * token (e.g. clean output from a fixed build) pass through unchanged.
+ */
+function cleanMinimaxM3ControlTokens(raw) {
+  if (typeof raw !== "string" || !raw.includes(MINIMAX_M3_CONTROL)) return raw;
+  return raw
+    .split(MINIMAX_M3_CONTROL)
+    .map((seg, i) => {
+      if (i === 0) return seg; // preamble before the first control token
+      let s = seg;
+      if (s.startsWith("[")) s = s.slice(1);
+      if (s.endsWith("]")) s = s.slice(0, -1);
+      return s;
+    })
+    .join("");
+}
+
+/**
+ * Parse MiniMax-M3 tool-call XML from an assistant content string.
+ * Returns { textBefore, toolCalls } or null if no tool calls are present.
+ */
+function parseMinimaxM3ToolCalls(content) {
+  if (!hasMinimaxM3ToolCall(content)) return null;
+  const clean = cleanMinimaxM3ControlTokens(content);
+  const tcStart = clean.indexOf("<tool_call>");
+  const textBefore = (tcStart > 0 ? clean.slice(0, tcStart) : "").trim() || null;
+  const toolCalls = [];
+  const invokeRe = /<invoke\s+name="([^"]+)">([\s\S]*?)<\/invoke>/g;
+  let m;
+  while ((m = invokeRe.exec(clean)) !== null) {
+    const fnName = m[1];
+    const paramsBlock = m[2];
+    const params = {};
+    // Arguments are direct child tags: <name>value</name>. The backreference
+    // keeps multi-line / XML-bearing values (e.g. SVG in <content>) intact.
+    const paramRe = /<([A-Za-z_][\w.:-]*)>([\s\S]*?)<\/\1>/g;
+    let p;
+    while ((p = paramRe.exec(paramsBlock)) !== null) {
+      params[p[1]] = p[2];
+    }
+    toolCalls.push({
+      id: `call_${Math.random().toString(36).slice(2, 11)}`,
+      type: "function",
+      function: { name: fnName, arguments: JSON.stringify(params) }
+    });
+  }
+  return toolCalls.length > 0 ? { textBefore, toolCalls } : null;
+}
+
+/**
+ * Find the earliest index of any MiniMax tool-call marker (M2 or M3) in a
+ * string, or -1 if none is present.
+ */
+function minimaxToolCallStart(text) {
+  if (typeof text !== "string") return -1;
+  const indices = [];
+  const i2 = text.indexOf("<minimax:tool_call>");
+  if (i2 >= 0) indices.push(i2);
+  if (hasMinimaxM3ToolCall(text)) {
+    for (const idx of [text.indexOf(MINIMAX_M3_CONTROL), text.indexOf("<tool_call>"), text.indexOf("<invoke name=")]) {
+      if (idx >= 0) indices.push(idx);
+    }
+  }
+  return indices.length ? Math.min(...indices) : -1;
+}
+
+/** True if the string contains MiniMax tool-call markup (M2 or M3). */
+function hasMinimaxToolCall(text) {
+  return typeof text === "string"
+    && (text.includes("<minimax:tool_call>") || hasMinimaxM3ToolCall(text));
+}
+
+/** Parse either MiniMax M2 or M3 tool-call markup into { textBefore, toolCalls }. */
+function parseAnyMinimaxToolCalls(content) {
+  return parseMinimaxXmlToolCalls(content) || parseMinimaxM3ToolCalls(content);
+}
+
 /**
  * Transform a parsed non-streaming chat completion response object.
  * Converts any <minimax:tool_call> XML in choice content to tool_calls.
@@ -130,12 +234,12 @@ function transformMinimaxNonStreaming(parsed) {
   const choices = parsed.choices.map((choice) => {
     const msg = choice?.message;
     if (!msg) return choice;
-    // Check both content and reasoning_content for XML.
-    const contentHasXml = typeof msg.content === "string" && msg.content.includes("<minimax:tool_call>");
-    const reasoningHasXml = typeof msg.reasoning_content === "string" && msg.reasoning_content.includes("<minimax:tool_call>");
+    // Check both content and reasoning_content for XML (M2 or M3 format).
+    const contentHasXml = hasMinimaxToolCall(msg.content);
+    const reasoningHasXml = hasMinimaxToolCall(msg.reasoning_content);
     if (!contentHasXml && !reasoningHasXml) return choice;
     const xmlSource = contentHasXml ? msg.content : msg.reasoning_content;
-    const parsed2 = parseMinimaxXmlToolCalls(xmlSource);
+    const parsed2 = parseAnyMinimaxToolCalls(xmlSource);
     if (!parsed2) return choice;
     changed = true;
     const newMsg = { ...msg, tool_calls: parsed2.toolCalls };
@@ -143,7 +247,7 @@ function transformMinimaxNonStreaming(parsed) {
       newMsg.content = parsed2.textBefore;
     } else {
       // XML was in reasoning_content — strip it, keep content as-is
-      const xmlStart = msg.reasoning_content.indexOf("<minimax:tool_call>");
+      const xmlStart = minimaxToolCallStart(msg.reasoning_content);
       const cleanedReasoning = xmlStart > 0 ? msg.reasoning_content.slice(0, xmlStart).trim() : null;
       if (cleanedReasoning) newMsg.reasoning_content = cleanedReasoning;
       else delete newMsg.reasoning_content;
@@ -168,10 +272,10 @@ function transformMinimaxNonStreaming(parsed) {
 function recoverFromMinimaxParseError(parsed, modelName) {
   const message = parsed?.error?.message || parsed?.message || "";
   if (typeof message !== "string") return null;
-  if (!message.includes("<minimax:tool_call>")) return null;
-  const xmlStart = message.indexOf("<minimax:tool_call>");
+  const xmlStart = minimaxToolCallStart(message);
+  if (xmlStart < 0) return null;
   const xmlPayload = message.slice(xmlStart);
-  const parsed2 = parseMinimaxXmlToolCalls(xmlPayload);
+  const parsed2 = parseAnyMinimaxToolCalls(xmlPayload);
   if (!parsed2 || parsed2.toolCalls.length === 0) return null;
   return {
     id: `chatcmpl-recover-${Math.random().toString(36).slice(2, 11)}`,
@@ -220,7 +324,8 @@ function synthesizeMinimaxSseFromCompletion(completion) {
  * it.  Returns the rewritten SSE text or null if no recovery is needed.
  */
 function recoverMinimaxSseParseError(sseText, modelName) {
-  if (!sseText.includes("Failed to parse input") || !sseText.includes("<minimax:tool_call>")) return null;
+  if (!sseText.includes("Failed to parse input")) return null;
+  if (!sseText.includes("<minimax:tool_call>") && !sseText.includes(MINIMAX_M3_CONTROL)) return null;
   // Walk every data: line to find the first event with an error.message containing the XML.
   for (const line of sseText.split("\n")) {
     const trimmed = line.trim();
@@ -243,7 +348,7 @@ function recoverMinimaxSseParseError(sseText, modelName) {
  * Returns the original text unchanged if no tool calls are detected.
  */
 function transformMinimaxSseBuffer(sseText) {
-  if (!sseText.includes("<minimax:tool_call>")) return sseText;
+  if (!sseText.includes("<minimax:tool_call>") && !sseText.includes(MINIMAX_M3_CONTROL)) return sseText;
 
   // Reconstruct the full content and a representative chunk skeleton.
   let skeleton = null;
@@ -264,7 +369,7 @@ function transformMinimaxSseBuffer(sseText) {
     } catch { /* skip malformed */ }
   }
 
-  const parsed2 = parseMinimaxXmlToolCalls(accContent);
+  const parsed2 = parseAnyMinimaxToolCalls(accContent);
   if (!parsed2 || !skeleton) return sseText;
 
   const { textBefore, toolCalls } = parsed2;
@@ -316,11 +421,24 @@ function flattenContent(content) {
 // trailing unterminated block) from a string. Returns the cleaned text (or
 // null if nothing remains after trimming).
 function stripMinimaxXml(text) {
-  if (typeof text !== "string" || !text.includes("<minimax:tool_call>")) return text;
-  let cleaned = text.replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/g, "");
-  // Drop any trailing unterminated XML block (model output cut off mid-call).
-  const orphan = cleaned.indexOf("<minimax:tool_call>");
-  if (orphan >= 0) cleaned = cleaned.slice(0, orphan);
+  if (typeof text !== "string") return text;
+  const hasM2 = text.includes("<minimax:tool_call>");
+  const hasM3 = hasMinimaxM3ToolCall(text);
+  if (!hasM2 && !hasM3) return text;
+  let cleaned = text;
+  if (hasM3) {
+    // Reconstruct from control tokens, then drop the <tool_call> block(s).
+    cleaned = cleanMinimaxM3ControlTokens(cleaned)
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "");
+    const orphanM3 = cleaned.indexOf("<tool_call>");
+    if (orphanM3 >= 0) cleaned = cleaned.slice(0, orphanM3);
+  }
+  if (cleaned.includes("<minimax:tool_call>")) {
+    cleaned = cleaned.replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/g, "");
+    // Drop any trailing unterminated XML block (model output cut off mid-call).
+    const orphan = cleaned.indexOf("<minimax:tool_call>");
+    if (orphan >= 0) cleaned = cleaned.slice(0, orphan);
+  }
   cleaned = cleaned.trim();
   return cleaned.length > 0 ? cleaned : null;
 }
@@ -332,8 +450,8 @@ function sanitizeMessagesForMinimax(messages) {
     if (!msg) return msg;
     const flatContent = flattenContent(msg?.content);
     const flatReasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content : null;
-    const contentHasXml = !!(flatContent && flatContent.includes("<minimax:tool_call>"));
-    const reasoningHasXml = !!(flatReasoning && flatReasoning.includes("<minimax:tool_call>"));
+    const contentHasXml = hasMinimaxToolCall(flatContent);
+    const reasoningHasXml = hasMinimaxToolCall(flatReasoning);
     if (!contentHasXml && !reasoningHasXml) return msg;
 
     changed = true;
@@ -344,7 +462,7 @@ function sanitizeMessagesForMinimax(messages) {
     // we still strip the XML so llama-server's chat parser doesn't choke.
     if (msg.role === "assistant" && !Array.isArray(msg.tool_calls)) {
       const xmlSource = contentHasXml ? flatContent : flatReasoning;
-      const parsed2 = parseMinimaxXmlToolCalls(xmlSource);
+      const parsed2 = parseAnyMinimaxToolCalls(xmlSource);
       if (parsed2) out.tool_calls = parsed2.toolCalls;
     }
 
@@ -392,6 +510,13 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
         body = body.replace(/<minimax:tool_call>[\s\S]*?<\\?\/minimax:tool_call>/g, "");
         // Strip any remaining unterminated occurrences.
         body = body.replace(/<minimax:tool_call>/g, "");
+      }
+      // MiniMax-M3: scrub control tokens and any reconstructed <tool_call>
+      // blocks that survived message sanitisation. Gated on the M3 control
+      // token so other models' <tool_call> JSON is never touched.
+      if (body.includes(MINIMAX_M3_CONTROL)) {
+        body = body.split(MINIMAX_M3_CONTROL).join("");
+        body = body.replace(/<tool_call>[\s\S]*?<\\?\/tool_call>/g, "");
       }
     } else {
       body = isJsonRequest ? undefined : req;
