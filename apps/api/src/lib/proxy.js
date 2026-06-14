@@ -247,9 +247,10 @@ function xmlToJsonValue(xml) {
   if (!text) return "";
   const children = extractXmlChildren(text);
   if (!children) {
-    // Coerce boolean and numeric literals so schema validation passes.
+    // Coerce primitive literals so schema validation passes.
     if (text === "true")  return true;
     if (text === "false") return false;
+    if (text === "null")  return null;
     if (text !== "" && !Number.isNaN(Number(text))) return Number(text);
     return text;
   }
