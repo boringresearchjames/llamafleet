@@ -110,7 +110,8 @@ function parseMinimaxXmlToolCalls(content) {
     const paramRe = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/g;
     let p;
     while ((p = paramRe.exec(paramsBlock)) !== null) {
-      params[p[1]] = p[2];
+      // Apply recursive XML→JSON conversion in case the value is structured
+      params[p[1]] = xmlToJsonValue(p[2]);
     }
     toolCalls.push({
       id: `call_${Math.random().toString(36).slice(2, 11)}`,
@@ -165,6 +166,105 @@ function cleanMinimaxM3ControlTokens(raw) {
     .join("");
 }
 
+// ---------------------------------------------------------------------------
+// XML → JSON recursive converter (for nested M3 tool-call argument values)
+// ---------------------------------------------------------------------------
+// M3 outputs complex arguments as nested XML, e.g.:
+//   <questions><item><question>…</question><options><item>…</item></options></item></questions>
+// The flat regex approach extracts the raw XML string as the arg value, but
+// clients expect proper JSON arrays/objects. This converter handles:
+//   - pure text               → string
+//   - all-<item> children     → JSON array  (each child recursed)
+//   - mixed named children    → JSON object (same-name siblings → array)
+//   - self-closing tags       → null
+
+/**
+ * Extract the top-level XML child elements from a string, depth-tracking
+ * same-name opening/closing tags so nested identical tags are handled
+ * correctly (e.g. <item> inside <item>).
+ * Returns [{tag, content}, …] or null if no element children are found.
+ */
+function extractXmlChildren(xml) {
+  const text = (xml || "").trim();
+  const children = [];
+  let pos = 0;
+  while (pos < text.length) {
+    const start = text.indexOf("<", pos);
+    if (start === -1) break;
+    const gt = text.indexOf(">", start + 1);
+    if (gt === -1) break;
+    const inner = text.slice(start + 1, gt);
+    // Skip closing / comment / PI tags
+    if (inner.startsWith("/") || inner.startsWith("!") || inner.startsWith("?")) {
+      pos = gt + 1; continue;
+    }
+    // Self-closing
+    if (inner.endsWith("/")) {
+      children.push({ tag: inner.slice(0, -1).trim().split(/[\s>]/)[0], content: "" });
+      pos = gt + 1; continue;
+    }
+    const tagName = inner.trim().split(/[\s>]/)[0];
+    if (!tagName) { pos = gt + 1; continue; }
+    const openTag  = `<${tagName}`;
+    const closeTag = `</${tagName}>`;
+    let depth = 1;
+    let scan = gt + 1;
+    let closePos = -1;
+    while (depth > 0 && scan < text.length) {
+      const co = text.indexOf(closeTag, scan);
+      const op = text.indexOf(openTag,  scan);
+      if (co === -1) { scan = text.length; break; }
+      if (op !== -1 && op < co) {
+        // Make sure it's really the same tag (next char is > or whitespace or /)
+        const nextCh = text[op + openTag.length];
+        if (nextCh === ">" || nextCh === " " || nextCh === "\t" || nextCh === "\n" || nextCh === "/") {
+          depth++;
+          scan = op + openTag.length;
+          continue;
+        }
+      }
+      depth--;
+      if (depth === 0) { closePos = co; break; }
+      scan = co + closeTag.length;
+    }
+    if (closePos === -1) {
+      // Unclosed tag — treat rest as content
+      children.push({ tag: tagName, content: text.slice(gt + 1).trim() });
+      break;
+    }
+    children.push({ tag: tagName, content: text.slice(gt + 1, closePos).trim() });
+    pos = closePos + closeTag.length;
+  }
+  return children.length > 0 ? children : null;
+}
+
+/**
+ * Recursively convert an XML string (M3 tool argument value) to a JS value.
+ * Returns a string, array, or plain object — ready for JSON.stringify.
+ */
+function xmlToJsonValue(xml) {
+  const text = (xml || "").trim();
+  if (!text) return "";
+  const children = extractXmlChildren(text);
+  if (!children) return text; // pure text node
+  // All <item> siblings → array
+  if (children.every(c => c.tag === "item")) {
+    return children.map(c => xmlToJsonValue(c.content));
+  }
+  // Named siblings → object (duplicate names become arrays)
+  const obj = {};
+  for (const { tag, content } of children) {
+    const val = xmlToJsonValue(content);
+    if (Object.prototype.hasOwnProperty.call(obj, tag)) {
+      if (!Array.isArray(obj[tag])) obj[tag] = [obj[tag]];
+      obj[tag].push(val);
+    } else {
+      obj[tag] = val;
+    }
+  }
+  return obj;
+}
+
 /**
  * Parse MiniMax-M3 tool-call XML from an assistant content string.
  * Returns { textBefore, toolCalls } or null if no tool calls are present.
@@ -181,12 +281,15 @@ function parseMinimaxM3ToolCalls(content) {
     const fnName = m[1];
     const paramsBlock = m[2];
     const params = {};
-    // Arguments are direct child tags: <name>value</name>. The backreference
-    // keeps multi-line / XML-bearing values (e.g. SVG in <content>) intact.
-    const paramRe = /<([A-Za-z_][\w.:-]*)>([\s\S]*?)<\/\1>/g;
-    let p;
-    while ((p = paramRe.exec(paramsBlock)) !== null) {
-      params[p[1]] = p[2];
+    // Extract top-level argument tags. We use extractXmlChildren (depth-aware)
+    // rather than a flat regex so nested structures like <questions><item>…</item>
+    // </questions> are correctly attributed to the right argument name.
+    const topLevel = extractXmlChildren(paramsBlock);
+    if (topLevel) {
+      for (const { tag, content } of topLevel) {
+        // Recursively convert nested XML (arrays, objects) to JSON values.
+        params[tag] = xmlToJsonValue(content);
+      }
     }
     toolCalls.push({
       id: `call_${Math.random().toString(36).slice(2, 11)}`,
@@ -235,21 +338,34 @@ function transformMinimaxNonStreaming(parsed) {
   const choices = parsed.choices.map((choice) => {
     const msg = choice?.message;
     if (!msg) return choice;
+    // Strip bare </mm:think> that M3 emits on non-thinking turns (no opening tag).
+    // It appears in content between tool results and should be invisible to clients.
+    let cleanedMsg = msg;
+    if (typeof msg.content === "string" && msg.content.includes("</mm:think>")) {
+      const stripped = msg.content
+        .replace(/<mm:think>[\s\S]*?<\/mm:think>/g, "")  // full think blocks
+        .replace(/<\/mm:think>/g, "")                     // orphaned close tags
+        .trim();
+      if (stripped !== msg.content) {
+        changed = true;
+        cleanedMsg = { ...msg, content: stripped || null };
+      }
+    }
     // Check both content and reasoning_content for XML (M2 or M3 format).
-    const contentHasXml = hasMinimaxToolCall(msg.content);
-    const reasoningHasXml = hasMinimaxToolCall(msg.reasoning_content);
-    if (!contentHasXml && !reasoningHasXml) return choice;
-    const xmlSource = contentHasXml ? msg.content : msg.reasoning_content;
+    const contentHasXml = hasMinimaxToolCall(cleanedMsg.content);
+    const reasoningHasXml = hasMinimaxToolCall(cleanedMsg.reasoning_content);
+    if (!contentHasXml && !reasoningHasXml) return changed ? { ...choice, message: cleanedMsg } : choice;
+    const xmlSource = contentHasXml ? cleanedMsg.content : cleanedMsg.reasoning_content;
     const parsed2 = parseAnyMinimaxToolCalls(xmlSource);
-    if (!parsed2) return choice;
+    if (!parsed2) return changed ? { ...choice, message: cleanedMsg } : choice;
     changed = true;
-    const newMsg = { ...msg, tool_calls: parsed2.toolCalls };
+    const newMsg = { ...cleanedMsg, tool_calls: parsed2.toolCalls };
     if (contentHasXml) {
       newMsg.content = parsed2.textBefore;
     } else {
       // XML was in reasoning_content — strip it, keep content as-is
-      const xmlStart = minimaxToolCallStart(msg.reasoning_content);
-      const cleanedReasoning = xmlStart > 0 ? msg.reasoning_content.slice(0, xmlStart).trim() : null;
+      const xmlStart = minimaxToolCallStart(cleanedMsg.reasoning_content);
+      const cleanedReasoning = xmlStart > 0 ? cleanedMsg.reasoning_content.slice(0, xmlStart).trim() : null;
       if (cleanedReasoning) newMsg.reasoning_content = cleanedReasoning;
       else delete newMsg.reasoning_content;
     }
@@ -349,12 +465,45 @@ function recoverMinimaxSseParseError(sseText, modelName) {
  * Returns the original text unchanged if no tool calls are detected.
  */
 function transformMinimaxSseBuffer(sseText) {
-  if (!sseText.includes("<minimax:tool_call>") && !sseText.includes(MINIMAX_M3_CONTROL)) return sseText;
+  const hasToolCallMarkup = sseText.includes("<minimax:tool_call>") || sseText.includes(MINIMAX_M3_CONTROL);
+  const hasOrphanThink   = sseText.includes("</mm:think>");
+  if (!hasToolCallMarkup && !hasOrphanThink) return sseText;
+
+  // Strip orphaned </mm:think> (M3 emits it on non-thinking turns between tool results).
+  // Rewrite every SSE chunk whose content delta contains it.
+  let working = sseText;
+  if (hasOrphanThink) {
+    const lines = working.split("\n");
+    const rewritten = lines.map(line => {
+      if (!line.trim().startsWith("data:")) return line;
+      const payload = line.trim().slice(5).trim();
+      if (!payload || payload === "[DONE]") return line;
+      try {
+        const chunk = JSON.parse(payload);
+        const delta = chunk?.choices?.[0]?.delta;
+        if (typeof delta?.content !== "string" || !delta.content.includes("</mm:think>")) return line;
+        const cleaned = delta.content
+          .replace(/<mm:think>[\s\S]*?<\/mm:think>/g, "")
+          .replace(/<\/mm:think>/g, "")
+          .trim();
+        const newChunk = {
+          ...chunk,
+          choices: chunk.choices.map((c, i) =>
+            i === 0 ? { ...c, delta: { ...delta, content: cleaned } } : c
+          )
+        };
+        return `data: ${JSON.stringify(newChunk)}`;
+      } catch { return line; }
+    });
+    working = rewritten.join("\n");
+  }
+
+  if (!hasToolCallMarkup) return working;
 
   // Reconstruct the full content and a representative chunk skeleton.
   let skeleton = null;
   let accContent = "";
-  for (const line of sseText.split("\n")) {
+  for (const line of working.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) continue;
     const payload = trimmed.slice(5).trim();
@@ -371,7 +520,7 @@ function transformMinimaxSseBuffer(sseText) {
   }
 
   const parsed2 = parseAnyMinimaxToolCalls(accContent);
-  if (!parsed2 || !skeleton) return sseText;
+  if (!parsed2 || !skeleton) return working;
 
   const { textBefore, toolCalls } = parsed2;
   const base = { id: skeleton.id, object: skeleton.object, created: skeleton.created, model: skeleton.model };
@@ -453,10 +602,21 @@ function sanitizeMessagesForMinimax(messages) {
     const flatReasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content : null;
     const contentHasXml = hasMinimaxToolCall(flatContent);
     const reasoningHasXml = hasMinimaxToolCall(flatReasoning);
-    if (!contentHasXml && !reasoningHasXml) return msg;
+    // Strip bare </mm:think> that M3 leaks into content on non-thinking turns.
+    const contentHasOrphanThink = typeof flatContent === "string" && flatContent.includes("</mm:think>");
+    if (!contentHasXml && !reasoningHasXml && !contentHasOrphanThink) return msg;
 
     changed = true;
     const out = { ...msg };
+
+    if (contentHasOrphanThink && !contentHasXml) {
+      const cleaned = flatContent
+        .replace(/<mm:think>[\s\S]*?<\/mm:think>/g, "")
+        .replace(/<\/mm:think>/g, "")
+        .trim();
+      out.content = cleaned || null;
+      return out;
+    }
 
     // For assistant role: if there are no existing tool_calls, try to parse
     // the XML into tool_calls. If parsing fails or tool_calls are already set,
