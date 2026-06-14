@@ -852,33 +852,107 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
       finalize();
     }, firstTokenMs);
 
-    // Buffer the entire SSE response for chat/completions so we can detect and
-    // transform <minimax:tool_call> XML before it reaches the client.
-    // We always buffer on chat endpoints (not just when tools are declared in
-    // the current request) because MiniMax can emit XML whenever it was trained
-    // to use tools, regardless of whether the client re-declared them.
+    // Hybrid streaming strategy for chat/completions:
+    //   Phase 1 – think:      stream <mm:think> tokens as reasoning_content in real-time
+    //   Phase 2 – post-think: buffer until stream end, then transform for tool-call XML
+    // This keeps the client unblocked during M3's long thinking monologues while
+    // still allowing correct tool_calls synthesis after </mm:think>.
+    // For responses with no <mm:think> block (post-tool-result continuations),
+    // the first non-think delta triggers Phase 2 immediately (same as before).
     if (isDiagnosticChat) {
-      const chunks = [];
-      stream.on("data", (chunk) => {
-        if (!firstTokenReceived) {
-          firstTokenReceived = true;
-          clearTimeout(firstTokenTimer);
+      let acc        = "";    // accumulates raw text until we have complete SSE events
+      let thinkSeen  = false; // we have seen <mm:think>
+      let postThink  = false; // we have seen </mm:think> → Phase 2
+      const postBuf  = [];    // complete SSE event strings buffered for Phase 2
+
+      /** Rewrite a parsed chunk to carry reasoning_content instead of content. */
+      function asReasoningChunk(chunk, delta, text) {
+        const d = { ...delta, reasoning_content: text };
+        delete d.content;
+        return { ...chunk, choices: [{ ...chunk.choices[0], delta: d }] };
+      }
+
+      /**
+       * Process one complete SSE event string (no trailing \n\n).
+       * Streams reasoning_content deltas during Phase 1; pushes to postBuf in Phase 2.
+       */
+      function processEvent(eventText) {
+        if (postThink) { postBuf.push(eventText); return; }
+
+        const dataLine = eventText.split("\n").find(l => l.trimStart().startsWith("data:"));
+        if (!dataLine) { res.write(eventText + "\n\n"); return; }
+
+        const payload = dataLine.trimStart().slice(5).trim();
+        if (!payload) { res.write(eventText + "\n\n"); return; }
+        if (payload === "[DONE]") { postBuf.push(eventText); return; } // re-emitted after transform
+
+        let chunk;
+        try { chunk = JSON.parse(payload); } catch { res.write(eventText + "\n\n"); return; }
+
+        const delta   = chunk?.choices?.[0]?.delta;
+        const content = typeof delta?.content === "string" ? delta.content : null;
+
+        // Non-content delta (role header, finish_reason chunk, etc.)
+        if (content === null) {
+          // If thinking never started, first non-content delta → switch to Phase 2
+          if (!thinkSeen) { postThink = true; postBuf.push(eventText); }
+          else { res.write(eventText + "\n\n"); }
+          return;
         }
-        chunks.push(chunk);
+
+        const hasOpen  = content.includes("<mm:think>");
+        const hasClose = content.includes("</mm:think>");
+
+        // No think markers and thinking never started → Phase 2 immediately
+        if (!thinkSeen && !hasOpen && !hasClose) {
+          postThink = true; postBuf.push(eventText); return;
+        }
+
+        if (hasOpen) thinkSeen = true;
+
+        if (!hasClose) {
+          // Pure think content — strip the open tag and emit as reasoning_content
+          const clean = content.replace(/<mm:think>/g, "");
+          if (clean) res.write(`data: ${JSON.stringify(asReasoningChunk(chunk, delta, clean))}\n\n`);
+          return;
+        }
+
+        // This event contains </mm:think> — split at the close tag
+        const ci        = content.indexOf("</mm:think>");
+        const thinkPart = content.slice(0, ci).replace(/<mm:think>/g, "");
+        const rest      = content.slice(ci + "</mm:think>".length).trim();
+
+        if (thinkPart) res.write(`data: ${JSON.stringify(asReasoningChunk(chunk, delta, thinkPart))}\n\n`);
+
+        // Switch to Phase 2
+        postThink = true;
+        if (rest) {
+          const restChunk = { ...chunk, choices: [{ ...chunk.choices[0], delta: { ...delta, content: rest } }] };
+          postBuf.push(`data: ${JSON.stringify(restChunk)}`);
+        }
+      }
+
+      stream.on("data", (rawChunk) => {
+        if (!firstTokenReceived) { firstTokenReceived = true; clearTimeout(firstTokenTimer); }
+        acc += rawChunk.toString("utf8");
+        // Consume all complete SSE events (separated by \n\n)
+        let sep;
+        while ((sep = acc.indexOf("\n\n")) !== -1) {
+          const event = acc.slice(0, sep);
+          acc = acc.slice(sep + 2);
+          if (event.trim()) processEvent(event);
+          else if (!postThink) res.write("\n\n"); // preserve SSE framing
+        }
       });
+
       stream.on("end", () => {
         clearTimeout(firstTokenTimer);
         markProxyCompletion(instance);
-        const sseText = Buffer.concat(chunks).toString("utf8");
-        // First check if the stream contains a llama-server parse error with
-        // recoverable XML payload; if so, replace the entire stream with a
-        // synthesized success completion.
-        const recovered = recoverMinimaxSseParseError(sseText, req.body?.model);
+        if (acc.trim()) postBuf.push(acc); // flush any partial trailing event
+        const sseText = postBuf.join("\n\n") + "\n\n";
+        const recovered   = recoverMinimaxSseParseError(sseText, req.body?.model);
         const transformed = recovered ?? transformMinimaxSseBuffer(sseText);
-        if (!res.writableEnded) {
-          res.write(transformed);
-          res.end();
-        }
+        if (!res.writableEnded) { res.write(transformed); res.end(); }
         finalize();
       });
       stream.on("error", () => { clearTimeout(firstTokenTimer); finalize(); if (!res.writableEnded) res.end(); });
