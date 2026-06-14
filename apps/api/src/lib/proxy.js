@@ -478,7 +478,9 @@ function recoverMinimaxSseParseError(sseText, modelName) {
  * Returns the original text unchanged if no tool calls are detected.
  */
 function transformMinimaxSseBuffer(sseText) {
-  const hasToolCallMarkup = sseText.includes("<minimax:tool_call>") || sseText.includes(MINIMAX_M3_CONTROL);
+  const hasToolCallMarkup = sseText.includes("<minimax:tool_call>")
+    || sseText.includes(MINIMAX_M3_CONTROL)
+    || sseText.includes("<invoke name=");  // M3 clean output (no control tokens)
   const hasOrphanThink   = sseText.includes("</mm:think>");
   if (!hasToolCallMarkup && !hasOrphanThink) return sseText;
 
