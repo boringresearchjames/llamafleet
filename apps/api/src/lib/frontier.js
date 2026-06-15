@@ -3,6 +3,7 @@ import { audit } from "./audit.js";
 import { now } from "./utils.js";
 import { frontierTimeoutMs, frontierFirstTokenMs } from "./config.js";
 import { copyProxyResponseHeaders, proxyRequestHeaders, usageMetric } from "./proxy.js";
+import { compressMessages, mergeCompressionConfig } from "./compress.js";
 
 // ---------------------------------------------------------------------------
 // In-memory frontier backend stats (reset on restart)
@@ -106,7 +107,30 @@ export async function proxyToFrontier(backend, req, res, routeName) {
   const incomingBody = req.body && typeof req.body === "object" ? req.body : {};
   const defaults = backend.requestDefaults && typeof backend.requestDefaults === "object"
     ? backend.requestDefaults : {};
-  const outgoingBody = { ...defaults, ...incomingBody, model: backend.model };
+  const mergedBody = { ...defaults, ...incomingBody, model: backend.model };
+
+  // Context compression — only when the backend has compression enabled.
+  // Defaults off so peer LlamaFleet instances that compress on their own end
+  // don't get double-compressed here.
+  const compressionCfg = backend.compression
+    ? mergeCompressionConfig(state.settings?.compression)
+    : { enabled: false };
+  const { messages: compressedMessages, stats: compressionStats } =
+    compressMessages(mergedBody.messages, compressionCfg);
+  if (compressionCfg.enabled && compressionStats.compressed > 0) {
+    const saved = compressionStats.tokensIn - compressionStats.tokensOut;
+    if (saved > 0) {
+      console.log(
+        `[compress] frontier=${backend.id} ` +
+        `compressed=${compressionStats.compressed} msgs ` +
+        `tokens=${compressionStats.tokensIn}→${compressionStats.tokensOut} ` +
+        `saved~${saved}`
+      );
+    }
+  }
+  const outgoingBody = compressedMessages !== mergedBody.messages
+    ? { ...mergedBody, messages: compressedMessages }
+    : mergedBody;
 
   // Build headers — strip hop-by-hop, drop caller's Authorization, inject ours
   // API key supports env var references: a value like "$OPENROUTER_KEY" is resolved

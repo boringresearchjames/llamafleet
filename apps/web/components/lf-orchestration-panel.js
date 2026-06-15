@@ -192,7 +192,7 @@ class LfOrchestrationPanel extends HTMLElement {
         <div class="orch-card-main">
           <div class="orch-card-name"><code>${this._esc(b.name)}</code></div>
           <div class="orch-card-meta">
-            ${this._esc(b.baseUrl)} &middot; model: <code>${this._esc(b.model)}</code>
+            ${this._esc(b.baseUrl)} &middot; model: <code>${this._esc(b.model)}</code>${b.compression ? ' &middot; <span class="orch-tag">compression</span>' : ''}
           </div>
           ${stats ? `<div class="orch-card-desc">${stats.totalRequests || 0} total req &middot; ${stats.totalInputTokens || 0} in / ${stats.totalOutputTokens || 0} out tokens${costUsd != null ? ` &middot; ~$${costUsd.toFixed(4)} session cost` : ''}</div>` : ''}
         </div>
@@ -811,6 +811,11 @@ class LfOrchestrationPanel extends HTMLElement {
           <label class="orch-label">Request defaults <span class="orch-hint">(JSON, merged into outgoing body; caller values win)</span>
             <textarea class="orch-textarea" id="orchBackendDefaults" rows="2" placeholder='{"temperature": 0.7, "max_tokens": 4096}'></textarea>
           </label>
+          <label class="orch-label orch-label-checkbox">
+            <input type="checkbox" id="orchBackendCompression" />
+            Enable context compression
+            <span class="orch-hint">Compress message history before sending. Disable for peer LlamaFleet instances that handle their own compression.</span>
+          </label>
           <div class="orch-dialog-actions">
             <button class="btn-small btn-danger" type="button" id="orchBackendCancel">Cancel</button>
             <button class="btn-primary" type="button" id="orchBackendSave">Save Backend</button>
@@ -832,6 +837,7 @@ class LfOrchestrationPanel extends HTMLElement {
     this.querySelector('#orchBackendCostOut').value = backend?.costPer1kOutputTokens ?? '';
     this.querySelector('#orchBackendHeaders').value = backend?.extraHeaders ? JSON.stringify(backend.extraHeaders, null, 2) : '';
     this.querySelector('#orchBackendDefaults').value = backend?.requestDefaults ? JSON.stringify(backend.requestDefaults, null, 2) : '';
+    this.querySelector('#orchBackendCompression').checked = !!backend?.compression;
     this.querySelector('#orchBackendError').textContent = '';
     dialog.showModal();
   }
@@ -846,6 +852,7 @@ class LfOrchestrationPanel extends HTMLElement {
     const costOut = this.querySelector('#orchBackendCostOut').value;
     const headersRaw = this.querySelector('#orchBackendHeaders').value.trim();
     const defaultsRaw = this.querySelector('#orchBackendDefaults').value.trim();
+    const compression = this.querySelector('#orchBackendCompression').checked;
 
     if (!name) { errEl.textContent = 'Name is required.'; return; }
     if (!baseUrl) { errEl.textContent = 'Base URL is required.'; return; }
@@ -868,7 +875,8 @@ class LfOrchestrationPanel extends HTMLElement {
         costPer1kInputTokens: costIn !== '' ? Number(costIn) : null,
         costPer1kOutputTokens: costOut !== '' ? Number(costOut) : null,
         extraHeaders,
-        requestDefaults
+        requestDefaults,
+        compression
       };
       const method = this._editingBackend ? 'PUT' : 'POST';
       const path = this._editingBackend

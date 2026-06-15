@@ -152,6 +152,7 @@ router.post("/frontier-backends", (req, res) => {
       ? payload.extraHeaders : null,
     costPer1kInputTokens: payload.costPer1kInputTokens != null ? Number(payload.costPer1kInputTokens) : null,
     costPer1kOutputTokens: payload.costPer1kOutputTokens != null ? Number(payload.costPer1kOutputTokens) : null,
+    compression: !!payload.compression,
     createdAt: now(),
     updatedAt: now()
   };
@@ -199,6 +200,7 @@ router.put("/frontier-backends/:id", (req, res) => {
     extraHeaders: payload.extraHeaders !== undefined ? (payload.extraHeaders || null) : existing.extraHeaders,
     costPer1kInputTokens: payload.costPer1kInputTokens !== undefined ? (payload.costPer1kInputTokens != null ? Number(payload.costPer1kInputTokens) : null) : existing.costPer1kInputTokens,
     costPer1kOutputTokens: payload.costPer1kOutputTokens !== undefined ? (payload.costPer1kOutputTokens != null ? Number(payload.costPer1kOutputTokens) : null) : existing.costPer1kOutputTokens,
+    compression: payload.compression !== undefined ? !!payload.compression : (existing.compression || false),
     updatedAt: now()
   };
 
