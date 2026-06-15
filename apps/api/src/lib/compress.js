@@ -38,6 +38,9 @@ export const DEFAULT_COMPRESSION_CONFIG = {
   maxSearchResults: 12,
   compressDiffs: true,   // strip context lines from unified diffs
   stripHtml: true,       // strip HTML tags from web-fetch results
+  compressLogs: true,    // enable log dedup/truncation (disable for agent tool responses)
+  logPatternDedup: true, // enable Stage-2 pattern dedup (collapses build-output runs; disable for tool responses to prevent agent loops)
+  preserveLastMessages: 0, // never compress the N most recent messages (set to 4+ for agent workflows to prevent tool-call loops)
 };
 
 // ---------------------------------------------------------------------------
@@ -229,7 +232,10 @@ function compressLog(text, cfg) {
   }
 
   // Stage 2: pattern-normalised dedup (collapses build-output runs)
-  const patDeduped = [];
+  // Disabled for tool messages — see logPatternDedup flag — to prevent agent loops caused
+  // by collapsing semantically distinct lines (e.g. "Step 1: done", "Step 2: done").
+  const patDeduped = cfg.logPatternDedup !== false ? [] : null;
+  if (cfg.logPatternDedup !== false) {
   let j = 0;
   while (j < deduped.length) {
     const line = deduped[j];
@@ -251,11 +257,12 @@ function compressLog(text, cfg) {
     }
     j += count;
   }
+  }
 
   // Stage 3: collapse runs of 3+ blank lines to 2
   const collapsed = [];
   let blanks = 0;
-  for (const line of patDeduped) {
+  for (const line of (patDeduped ?? deduped)) {
     if (line.trim() === "") { blanks++; if (blanks <= 2) collapsed.push(line); }
     else { blanks = 0; collapsed.push(line); }
   }
@@ -407,7 +414,7 @@ function compressString(text, cfg) {
   }
 
   if (isCodeLike(s))   return compressCode(s, cfg);
-  if (isLogLike(s))    return compressLog(s, cfg);
+  if (cfg.compressLogs !== false && isLogLike(s)) return compressLog(s, cfg);
 
   if (cfg.stripHtml && isHtmlLike(s)) {
     const plain = stripHtml(s);
@@ -418,7 +425,7 @@ function compressString(text, cfg) {
   if (isSearchResultsLike(s)) return compressSearchResults(s, cfg);
 
   // Plain-text fallback: if long enough, apply log compressor
-  if (s.split("\n").length > cfg.maxLogLines * 1.5) return compressLog(s, cfg);
+  if (cfg.compressLogs !== false && s.split("\n").length > cfg.maxLogLines * 1.5) return compressLog(s, cfg);
 
   // Return ANSI-stripped form even if no structural compression fired
   return s !== text ? s : text;
@@ -461,8 +468,14 @@ export function compressMessages(messages, cfg = DEFAULT_COMPRESSION_CONFIG) {
   let tokensOut = 0;
   let compressedCount = 0;
 
-  const result = messages.map(msg => {
+  // Never touch the N most recent messages — they drive current agent decisions
+  // and mutating them is the primary cause of tool-call loops.
+  const preserve = Number(cfg.preserveLastMessages) || 0;
+  const compressUpTo = preserve > 0 ? Math.max(0, messages.length - preserve) : messages.length;
+
+  const result = messages.map((msg, idx) => {
     if (!msg || typeof msg !== "object") return msg;
+    if (idx >= compressUpTo) return msg;  // preserve recent messages verbatim
     if (msg.role !== "tool" && msg.role !== "user") return msg;
     const content = msg.content;
     if (!content) return msg;
@@ -470,10 +483,13 @@ export function compressMessages(messages, cfg = DEFAULT_COMPRESSION_CONFIG) {
     const before = typeof content === "string" ? content : JSON.stringify(content);
     tokensIn += countTokensApprox(before);
 
-    // Tool results are curated search/read responses — never code-truncate them
-    // (head+tail drops the middle of a file, causing the model to retry the search).
-    // Log/JSON/diff/ANSI compression still fires; only the code head+tail is skipped.
-    const effectiveCfg = msg.role === "tool" ? { ...cfg, maxCodeLines: 1e9 } : cfg;
+    // Tool results — never code-truncate (head+tail drops the middle of a file, causing retries);
+    // also disable Stage-2 pattern dedup which can collapse semantically distinct step results
+    // and trigger agent loops (e.g. "Step 1: done", "Step 2: done" → both stripped).
+    // JSON/diff/identical-dedup/HTML compression still fires for tool messages.
+    const effectiveCfg = msg.role === "tool"
+      ? { ...cfg, maxCodeLines: 1e9, logPatternDedup: false }
+      : cfg;
     const afterContent = compressContent(content, effectiveCfg);
     const after = typeof afterContent === "string" ? afterContent : JSON.stringify(afterContent);
     tokensOut += countTokensApprox(after);
@@ -506,7 +522,10 @@ export function mergeCompressionConfig(partial) {
     codeHeadLines:    Number(partial.codeHeadLines)    > 0          ? Number(partial.codeHeadLines)    : d.codeHeadLines,
     codeTailLines:    Number(partial.codeTailLines)    > 0          ? Number(partial.codeTailLines)    : d.codeTailLines,
     maxSearchResults: Number(partial.maxSearchResults) > 0          ? Number(partial.maxSearchResults) : d.maxSearchResults,
-    compressDiffs:    typeof partial.compressDiffs     === "boolean" ? partial.compressDiffs     : d.compressDiffs,
-    stripHtml:        typeof partial.stripHtml         === "boolean" ? partial.stripHtml         : d.stripHtml,
+    compressDiffs:           typeof partial.compressDiffs           === "boolean" ? partial.compressDiffs           : d.compressDiffs,
+    stripHtml:               typeof partial.stripHtml               === "boolean" ? partial.stripHtml               : d.stripHtml,
+    compressLogs:            typeof partial.compressLogs            === "boolean" ? partial.compressLogs            : d.compressLogs,
+    logPatternDedup:         typeof partial.logPatternDedup         === "boolean" ? partial.logPatternDedup         : d.logPatternDedup,
+    preserveLastMessages:    Number(partial.preserveLastMessages)   >= 0          ? Number(partial.preserveLastMessages)    : d.preserveLastMessages,
   };
 }

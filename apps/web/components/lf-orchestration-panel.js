@@ -813,8 +813,10 @@ class LfOrchestrationPanel extends HTMLElement {
           </label>
           <label class="orch-label orch-label-checkbox">
             <input type="checkbox" id="orchBackendCompression" />
-            Enable context compression
-            <span class="orch-hint">Compress message history before sending. Disable for peer LlamaFleet instances that handle their own compression.</span>
+            <span class="orch-label-checkbox-text">
+              <span class="orch-label-checkbox-title">Enable context compression</span>
+              <span class="orch-hint">Compress message history before sending. Disable for peer LlamaFleet instances that handle their own compression.</span>
+            </span>
           </label>
           <div class="orch-dialog-actions">
             <button class="btn-small btn-danger" type="button" id="orchBackendCancel">Cancel</button>

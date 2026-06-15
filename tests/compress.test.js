@@ -166,7 +166,9 @@ ${Array.from({ length: 50 }, (_, i) => `<div class="item">Item ${i} content here
       "[ 70%] Building CXX object src/CMakeFiles/foo.dir/h.cpp.o",
       "[100%] Linking CXX executable foo",
     ].join("\n");
-    const messages = [{ role: "tool", content: buildLog }];
+    // Build output comes from user messages (pasted terminal output), not tool role.
+    // Pattern dedup is disabled for tool messages to prevent agent loops.
+    const messages = [{ role: "user", content: buildLog }];
     const { messages: out } = compressMessages(messages, enabled);
     const result = out[0].content;
     // Similar lines should be collapsed
