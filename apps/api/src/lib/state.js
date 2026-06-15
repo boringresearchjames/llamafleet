@@ -85,6 +85,15 @@ function migrateState(raw) {
   next.orchestrationRoutes = Array.isArray(next.orchestrationRoutes) ? next.orchestrationRoutes : [];
   next.frontierBackends = Array.isArray(next.frontierBackends) ? next.frontierBackends : [];
   next.modelDefaults = Array.isArray(next.modelDefaults) ? next.modelDefaults : [];
+  // On startup, any instance stuck in a transient state with no PID is
+  // orphaned (the bridge process died). Reset to stopped so Wake works.
+  next.instances = next.instances.map(inst => {
+    if (!inst || inst.pid != null) return inst;
+    if (["warming", "starting", "unhealthy"].includes(inst.state)) {
+      return { ...inst, state: "stopped", pid: null, lastError: null };
+    }
+    return inst;
+  });
   return next;
 }
 

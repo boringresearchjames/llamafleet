@@ -15,7 +15,11 @@ export function updateInstanceRequestMetrics(instance, delta = 0) {
   instance.inflightRequests = nextInflight;
   const maxInflight = Math.max(1, Number(instance.maxInflightRequests || 1));
   instance.queueDepth = Math.max(0, nextInflight - maxInflight);
-  if (delta > 0) instance.lastActivityAt = now();
+  if (delta > 0) {
+    instance.lastActivityAt = now();
+    instance.currentRequestTokens = 0;
+    instance.currentRequestStartedAt = Date.now();
+  }
   instance.updatedAt = now();
 }
 
@@ -877,6 +881,13 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
        * Streams reasoning_content deltas during Phase 1; pushes to postBuf in Phase 2.
        */
       function processEvent(eventText) {
+        // Increment live token counter for stall detection and TPS calculation.
+        const liveInst = state.instances.find(x => x.id === instance.id) || instance;
+        const prevCount = Number(liveInst.currentRequestTokens) || 0;
+        liveInst.currentRequestTokens = prevCount + 1;
+        // Reset start timestamp on the first token so TPS reflects decode speed,
+        // not prefill wait time (prefill can take 30-90s with no tokens flowing).
+        if (prevCount === 0) liveInst.currentRequestStartedAt = Date.now();
         if (postThink) { postBuf.push(eventText); return; }
 
         const dataLine = eventText.split("\n").find(l => l.trimStart().startsWith("data:"));
@@ -947,6 +958,14 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
 
       stream.on("end", () => {
         clearTimeout(firstTokenTimer);
+        // Compute TPS from streaming phase before resetting token counter.
+        const liveInst = state.instances.find(x => x.id === instance.id) || instance;
+        const startMs = Number(liveInst.currentRequestStartedAt) || 0;
+        const tokenCount = Number(liveInst.currentRequestTokens) || 0;
+        if (startMs > 0 && tokenCount > 5) {
+          const elapsedSec = (Date.now() - startMs) / 1000;
+          if (elapsedSec > 0.5) liveInst.lastRequestTps = Math.round((tokenCount / elapsedSec) * 10) / 10;
+        }
         markProxyCompletion(instance);
         if (acc.trim()) postBuf.push(acc); // flush any partial trailing event
         const sseText = postBuf.join("\n\n") + "\n\n";

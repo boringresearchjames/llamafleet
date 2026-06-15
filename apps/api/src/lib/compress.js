@@ -470,7 +470,11 @@ export function compressMessages(messages, cfg = DEFAULT_COMPRESSION_CONFIG) {
     const before = typeof content === "string" ? content : JSON.stringify(content);
     tokensIn += countTokensApprox(before);
 
-    const afterContent = compressContent(content, cfg);
+    // Tool results are curated search/read responses — never code-truncate them
+    // (head+tail drops the middle of a file, causing the model to retry the search).
+    // Log/JSON/diff/ANSI compression still fires; only the code head+tail is skipped.
+    const effectiveCfg = msg.role === "tool" ? { ...cfg, maxCodeLines: 1e9 } : cfg;
+    const afterContent = compressContent(content, effectiveCfg);
     const after = typeof afterContent === "string" ? afterContent : JSON.stringify(afterContent);
     tokensOut += countTokensApprox(after);
 

@@ -39,11 +39,13 @@ function activityChipHtml(inst) {
   const totalCompletionTokens = Math.max(0, Number(inst?.totalCompletionTokens || 0));
   const totalTokens = Math.max(0, Number(inst?.totalTokens || 0));
   const tokens = totalCompletionTokens > 0 ? totalCompletionTokens : totalTokens;
+  const currentTok = Math.max(0, Number(inst?.currentRequestTokens || 0));
   return `<lf-activity-chip
     inflight="${inflight}"
     max-inflight="${maxInflight}"
     queue="${queueDepth}"
     tokens="${tokens}"
+    current-tokens="${currentTok}"
     last-active="${escapeAttr(inst?.lastActivityAt || '')}"></lf-activity-chip>`;
 }
 
@@ -223,6 +225,11 @@ function renderInstanceData(data) {
           const pct   = tin > 0 ? ` &middot; ${Math.round((saved / tin) * 100)}%` : '';
           const fmtN  = n => n >= 1000 ? `~${(n/1000).toFixed(1)}k` : String(n);
           return `<div class="runtime-meta" title="Context compression savings since instance start">&#x1F5DC;&#xFE0F; ${fmtN(saved)} saved &middot; ${runs} req${runs !== 1 ? 's' : ''}${pct}</div>`;
+        })()}
+        ${(() => {
+          const tps = Number(inst.lastRequestTps) || 0;
+          if (tps <= 0) return '';
+          return `<div class="runtime-meta" title="Token generation speed from last completed request">&#x26A1; ${tps.toFixed(1)} t/s</div>`;
         })()}
       </td>
       <td>${inst.port}</td>

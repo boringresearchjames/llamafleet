@@ -60,7 +60,7 @@ function fmt(value) {
 }
 
 class LfActivityChip extends HTMLElement {
-  static observedAttributes = ['inflight', 'max-inflight', 'queue', 'tokens', 'last-active'];
+  static observedAttributes = ['inflight', 'max-inflight', 'queue', 'tokens', 'last-active', 'current-tokens'];
 
   #root;
 
@@ -78,6 +78,7 @@ class LfActivityChip extends HTMLElement {
     const maxInflight = Math.max(1, Number(this.getAttribute('max-inflight') || 1));
     const queue       = Math.max(0, Number(this.getAttribute('queue') || 0));
     const tokens      = Math.max(0, Number(this.getAttribute('tokens') || 0));
+    const currentTok  = Math.max(0, Number(this.getAttribute('current-tokens') || 0));
     const lastActiveMs = Date.parse(this.getAttribute('last-active') || '');
 
     const isProcessing   = inflight > 0;
@@ -90,7 +91,8 @@ class LfActivityChip extends HTMLElement {
     const agoSec     = recentlyActive
       ? Math.max(1, Math.round((Date.now() - lastActiveMs) / 1000))
       : null;
-    const tokenText  = tokens > 0 ? `tok:${fmt(tokens)}` : '';
+    const tokenText  = tokens > 0 && !isProcessing ? `tok:${fmt(tokens)}` : '';
+    const genText    = isProcessing && currentTok > 0 ? `gen:${fmt(currentTok)}` : '';
 
     // Reflect computed state as attribute for :host([activity=...]) CSS
     this.setAttribute('activity', activity);
@@ -100,6 +102,7 @@ class LfActivityChip extends HTMLElement {
       <span>${statusText}</span>
       <span class="count">${inflight}/${maxInflight}</span>
       ${queue  > 0           ? `<span class="queue">q:${queue}</span>`     : ''}
+      ${genText              ? `<span class="token">${genText}</span>`     : ''}
       ${tokenText            ? `<span class="token">${tokenText}</span>`   : ''}
       ${agoSec !== null      ? `<span class="fresh">${agoSec}s</span>`     : ''}
     `;
