@@ -2919,6 +2919,29 @@ lf-host-stats {
 
 .orch-backend-cost-row { display: flex; gap: 12px; }
 
+.orch-fusion-section {
+  border: 1px solid rgba(120, 80, 220, 0.35);
+  border-radius: 10px;
+  padding: 14px 16px 10px;
+  background: rgba(100, 60, 200, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+.orch-fusion-header {
+  font-weight: 600;
+  font-size: 13px;
+  color: #a070f0;
+}
+.orch-fusion-note {
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  margin: 0;
+}
+.orch-fusion-row { display: flex; gap: 12px; }
+.orch-fusion-row .orch-label { flex: 1; }
+
 
 
 /* ── Footer ── */

@@ -488,6 +488,10 @@ class LfOrchestrationPanel extends HTMLElement {
       const cfg = this._instanceConfigs.find(c => c.id === backend.configId);
       return `config:${this._esc(cfg?.name || backend.configName || backend.configId)}`;
     }
+    if (backend.type === 'fusion') {
+      const panels = (backend.panelBackends || []).map(p => p.model || p.backendId).join(' + ');
+      return `⚡ fusion(${this._esc(panels)})`;
+    }
     const fb = this._frontierBackends.find(b => b.id === backend.backendId);
     return `frontier:${this._esc(fb?.name || backend.backendId)}`;
   }
@@ -530,6 +534,25 @@ class LfOrchestrationPanel extends HTMLElement {
             ⚠ A broad <code>toolsPresent</code> rule appears before a <code>toolNameContains</code> rule — the specific rule will never fire.
           </p>
 
+          <div id="orchFusionSection" class="orch-fusion-section" hidden>
+            <div class="orch-fusion-header">⚡ Fusion Configuration</div>
+            <p class="orch-fusion-note">Both panels run in parallel. Panel 1 is the judge — it sees Panel 2's response and synthesizes the final streaming answer.</p>
+            <div class="orch-fusion-row">
+              <label class="orch-label orch-label-grow">Panel 1 <span class="orch-hint">(judge — synthesizes final answer)</span>
+                <select class="orch-select" id="orchFusionPanel1"></select>
+              </label>
+              <label class="orch-label orch-label-grow">Panel 2
+                <select class="orch-select" id="orchFusionPanel2"></select>
+              </label>
+            </div>
+            <label class="orch-label">Panel timeout (ms)
+              <input class="orch-input" id="orchFusionTimeout" type="number" value="120000" min="10000" step="5000" />
+            </label>
+            <label class="orch-label">Judge system prompt <span class="orch-hint">(appended when synthesizing — optional)</span>
+              <textarea class="orch-textarea" id="orchFusionSystemPrompt" rows="3" placeholder="e.g. Focus on code correctness and edge cases when synthesizing the final answer."></textarea>
+            </label>
+          </div>
+
           <div class="orch-test-panel">
             <div class="orch-test-header">
               <span class="orch-label-text">Test rules against real requests</span>
@@ -560,6 +583,12 @@ class LfOrchestrationPanel extends HTMLElement {
     this._renderRulesList();
     this._renderBackendPicker('orchDefaultBackend', route?.defaultBackend || null);
     this._renderBackendPicker('orchFallbackBackend', route?.fallbackBackend || null, true);
+    // If editing a fusion route, populate the fusion section fields
+    if (route?.defaultBackend?.type === 'fusion') {
+      this._populateFusionSection(route.defaultBackend);
+    } else {
+      this._populateFusionSection(null);
+    }
     this.querySelector('#orchRouteError').textContent = '';
     this._checkShadowWarning();
     this._renderTestEntries();
@@ -677,6 +706,11 @@ class LfOrchestrationPanel extends HTMLElement {
       `<option value="frontier::${b.id}" ${currentBackend?.type === 'frontier' && currentBackend?.backendId === b.id ? 'selected' : ''}>${this._esc(b.name)}</option>`
     ).join('');
 
+    // Fusion option — only for the default backend picker (not rules/fallback)
+    const fusionOption = (id === 'orchDefaultBackend')
+      ? `<optgroup label="Fusion"><option value="fusion" ${currentBackend?.type === 'fusion' ? 'selected' : ''}>⚡ Fusion (parallel panels + synthesis)</option></optgroup>`
+      : '';
+
     el.innerHTML = `
       <select class="orch-select orch-backend-select">
         ${nullOption}
@@ -686,6 +720,7 @@ class LfOrchestrationPanel extends HTMLElement {
           : `<option disabled>(no instances running)</option>`}
         ${configOptions ? `<optgroup label="Saved Configs">${configOptions}</optgroup>` : ''}
         ${frontierOptions ? `<optgroup label="Frontier">${frontierOptions}</optgroup>` : ''}
+        ${fusionOption}
       </select>
     `;
     const sel = el.querySelector('select');
@@ -693,11 +728,62 @@ class LfOrchestrationPanel extends HTMLElement {
     if (currentBackend?.type === 'local') sel.value = `local::${currentBackend.model}`;
     else if (currentBackend?.type === 'config') sel.value = `config::${currentBackend.configId}`;
     else if (currentBackend?.type === 'frontier') sel.value = `frontier::${currentBackend.backendId}`;
+    else if (currentBackend?.type === 'fusion') sel.value = 'fusion';
     else sel.value = '';
 
-    if (onChange) {
+    // Show/hide fusion section when this is the default backend picker
+    if (id === 'orchDefaultBackend') {
+      const toggleFusion = () => {
+        const section = this.querySelector('#orchFusionSection');
+        if (!section) return;
+        section.hidden = sel.value !== 'fusion';
+      };
+      sel.onchange = () => { toggleFusion(); if (onChange) onChange(this._parseBackendSelect(sel.value)); };
+      toggleFusion();
+    } else if (onChange) {
       sel.onchange = () => onChange(this._parseBackendSelect(sel.value));
     }
+  }
+
+  _fusionInstanceOptions(selected) {
+    const seenRoutes = new Set();
+    return this._runningInstances.map(inst => {
+      const routeName = inst.modelRouteName || inst.effectiveModel || inst.id;
+      if (seenRoutes.has(routeName)) return '';
+      seenRoutes.add(routeName);
+      return `<option value="${this._esc(routeName)}" ${selected === routeName ? 'selected' : ''}>${this._esc(inst.profileName || routeName)}</option>`;
+    }).filter(Boolean).join('');
+  }
+
+  _populateFusionSection(fusionBackend) {
+    const p1 = fusionBackend?.panelBackends?.[0]?.model || '';
+    const p2 = fusionBackend?.panelBackends?.[1]?.model || '';
+    const p1sel = this.querySelector('#orchFusionPanel1');
+    const p2sel = this.querySelector('#orchFusionPanel2');
+    if (p1sel) { p1sel.innerHTML = this._fusionInstanceOptions(p1); if (p1) p1sel.value = p1; }
+    if (p2sel) { p2sel.innerHTML = this._fusionInstanceOptions(p2); if (p2) p2sel.value = p2; }
+    const timeoutEl = this.querySelector('#orchFusionTimeout');
+    if (timeoutEl) timeoutEl.value = fusionBackend?.panelTimeoutMs || 120000;
+    const promptEl = this.querySelector('#orchFusionSystemPrompt');
+    if (promptEl) promptEl.value = fusionBackend?.judgeSystemPrompt || '';
+  }
+
+  _readFusionConfig() {
+    const p1 = this.querySelector('#orchFusionPanel1')?.value || '';
+    const p2 = this.querySelector('#orchFusionPanel2')?.value || '';
+    if (!p1 || !p2) return null;
+    const timeout = Number(this.querySelector('#orchFusionTimeout')?.value) || 120000;
+    const judgePrompt = this.querySelector('#orchFusionSystemPrompt')?.value?.trim() || null;
+    return {
+      type: 'fusion',
+      panelBackends: [
+        { type: 'local', model: p1 },
+        { type: 'local', model: p2 }
+      ],
+      judgeBackend: { type: 'local', model: p1 },
+      panelTimeoutMs: timeout,
+      ...(judgePrompt ? { judgeSystemPrompt: judgePrompt } : {})
+    };
   }
 
   _parseBackendSelect(value) {
@@ -740,12 +826,15 @@ class LfOrchestrationPanel extends HTMLElement {
     this.querySelector('#orchRouteSave').onclick = async () => {
       const name = this.querySelector('#orchRouteName').value.trim();
       const desc = this.querySelector('#orchRouteDesc').value.trim();
-      const defaultVal = this._parseBackendSelect(this.querySelector('#orchDefaultBackend select')?.value);
+      const defaultSelVal = this.querySelector('#orchDefaultBackend select')?.value;
+      const defaultVal = defaultSelVal === 'fusion'
+        ? this._readFusionConfig()
+        : this._parseBackendSelect(defaultSelVal);
       const fallbackVal = this._parseBackendSelect(this.querySelector('#orchFallbackBackend select')?.value);
       const errEl = this.querySelector('#orchRouteError');
 
       if (!name) { errEl.textContent = 'Name is required.'; return; }
-      if (!defaultVal) { errEl.textContent = 'Default backend is required.'; return; }
+      if (!defaultVal) { errEl.textContent = defaultSelVal === 'fusion' ? 'Fusion requires both Panel 1 and Panel 2 to be set.' : 'Default backend is required.'; return; }
 
       // Validate all rules have backends set
       for (let i = 0; i < this._rules.length; i++) {
