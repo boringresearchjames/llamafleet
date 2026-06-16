@@ -391,7 +391,8 @@ router.patch("/instances/:id", (req, res) => {
   const body = req.body || {};
   const updatable = [
     "runtimeArgs", "contextLength", "modelParallel", "maxInflightRequests",
-    "queueLimit", "headersTimeoutMs", "restartPolicy", "modelTtlSeconds"
+    "queueLimit", "headersTimeoutMs", "restartPolicy", "modelTtlSeconds",
+    "samplingDefaults"
   ];
 
   let changed = false;
@@ -425,6 +426,24 @@ router.patch("/instances/:id", (req, res) => {
   }
   if ("restartPolicy" in body) {
     instance.restartPolicy = parseRestartPolicy(body.restartPolicy);
+    changed = true;
+  }
+  if ("samplingDefaults" in body) {
+    // Accepts a plain object of sampling params (temperature, top_p, top_k, …)
+    // that get merged into every proxied request when the client omits them.
+    // Pass null/empty to clear.
+    const sd = body.samplingDefaults;
+    const ALLOWED = new Set(["temperature","top_p","top_k","min_p","repeat_penalty",
+      "frequency_penalty","presence_penalty","seed","max_tokens","top_a"]);
+    if (!sd || typeof sd !== "object" || Array.isArray(sd)) {
+      instance.samplingDefaults = null;
+    } else {
+      const filtered = {};
+      for (const [k, v] of Object.entries(sd)) {
+        if (ALLOWED.has(k) && v !== null && v !== undefined) filtered[k] = v;
+      }
+      instance.samplingDefaults = Object.keys(filtered).length ? filtered : null;
+    }
     changed = true;
   }
 

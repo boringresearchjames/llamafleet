@@ -750,9 +750,22 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
         }
       }
 
-      const reqBody = compressedMessages !== req.body.messages
+      let reqBody = compressedMessages !== req.body.messages
         ? { ...req.body, messages: compressedMessages }
         : req.body;
+
+      // Per-instance sampling defaults — only fill fields the client omitted.
+      if (instance?.samplingDefaults && typeof instance.samplingDefaults === "object") {
+        let merged = null;
+        for (const [key, val] of Object.entries(instance.samplingDefaults)) {
+          if (reqBody[key] === undefined || reqBody[key] === null) {
+            if (!merged) merged = { ...reqBody };
+            merged[key] = val;
+          }
+        }
+        if (merged) reqBody = merged;
+      }
+
       body = JSON.stringify(reqBody);
       // Final defensive sweep: scrub any remaining <minimax:tool_call> XML
       // anywhere in the serialised body (e.g. embedded in tools[] descriptions,
