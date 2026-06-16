@@ -151,6 +151,31 @@ function hasMinimaxM3ToolCall(content) {
     && !content.includes("<minimax:tool_call>");
 }
 
+// XML tag strings that M3 uses for tool calls.  When code files that describe
+// this format (e.g. proxy.js itself) land in context during codebase exploration,
+// M3 can confuse the descriptions for real invocation templates and emit a
+// garbled tool call.  We escape these patterns in non-assistant messages so
+// M3 treats them as inert text rather than XML triggers.
+const MINIMAX_XML_LITERAL_MAP = [
+  ["<minimax:tool_call>",  "[minimax:tool_call]"],
+  ["</minimax:tool_call>", "[/minimax:tool_call]"],
+  ["<tool_call>",          "[tool_call]"],
+  ["</tool_call>",         "[/tool_call]"],
+  ["<invoke name=",        "[invoke name="],
+  ["</invoke>",            "[/invoke]"],
+  ["<parameter name=",     "[parameter name="],
+  ["</parameter>",         "[/parameter]"],
+];
+
+function escapeMinimaxXmlLiterals(text) {
+  if (typeof text !== "string") return text;
+  let s = text;
+  for (const [from, to] of MINIMAX_XML_LITERAL_MAP) {
+    if (s.includes(from)) s = s.split(from).join(to);
+  }
+  return s;
+}
+
 /**
  * Strip MiniMax-M3's "<]minimax[>[ fragment ]" control-token wrappers and
  * reconstruct the underlying tool-call XML. Fragments without the control
@@ -617,6 +642,28 @@ function sanitizeMessagesForMinimax(messages) {
   let changed = false;
   const sanitized = messages.map((msg) => {
     if (!msg) return msg;
+
+    // ── non-assistant: escape M3 XML literal strings (prompt-injection guard) ──
+    // Prevents code files describing the M3 tool-call format from being
+    // mistaken for actual tool-call invocations by the model.
+    if (msg.role !== "assistant") {
+      const raw = typeof msg.content === "string" ? msg.content
+        : Array.isArray(msg.content) ? msg.content.map(p => (typeof p === "string" ? p : (p?.text ?? ""))).join("") : "";
+      if (MINIMAX_XML_LITERAL_MAP.some(([from]) => raw.includes(from))) {
+        changed = true;
+        const escapedContent = typeof msg.content === "string"
+          ? escapeMinimaxXmlLiterals(msg.content)
+          : Array.isArray(msg.content)
+            ? msg.content.map(p =>
+                typeof p === "string" ? escapeMinimaxXmlLiterals(p)
+                : (p?.text ? { ...p, text: escapeMinimaxXmlLiterals(p.text) } : p))
+            : msg.content;
+        return { ...msg, content: escapedContent };
+      }
+      return msg;
+    }
+
+    // ── assistant: existing strip / convert logic below ─────────────────────
     const flatContent = flattenContent(msg?.content);
     const flatReasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content : null;
     const contentHasXml = hasMinimaxToolCall(flatContent);
