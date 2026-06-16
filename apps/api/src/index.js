@@ -24,6 +24,7 @@ import systemRouter from "./routes/system.js";
 import orchestrationRouter from "./routes/orchestration.js";
 import { matchOrchestrationRoute, resolveBackend, getFrontierBackend, appendOrchestrationLog, injectSystemPrompt } from "./lib/orchestration.js";
 import { proxyToFrontier } from "./lib/frontier.js";
+import { dispatchFusion } from "./lib/fusion.js";
 import { resolveInstanceByModelName } from "./lib/routing.js";
 import { proxyToInstance } from "./lib/proxy.js";
 
@@ -121,6 +122,8 @@ app.post("/v1/chat/completions", largeJsonOrch, async (req, res, next) => {
       }
       const targetUrl = `${instanceBaseUrl(resolved.instance)}${req.path}`;
       await proxyToInstance(resolved.instance, req, res, targetUrl);
+    } else if (b.type === "fusion") {
+      await dispatchFusion(b, req, res);
     } else {
       res.status(500).json({ error: { message: `Unknown backend type: ${b.type}`, type: "server_error" } });
     }
