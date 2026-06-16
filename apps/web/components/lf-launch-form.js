@@ -306,6 +306,17 @@ function parseOptionalPositiveIntegerInput(id) {
   return num;
 }
 
+function buildSamplingDefaults() {
+  const temp = $("launchSamplingTemp").value.trim();
+  const topP = $("launchSamplingTopP").value.trim();
+  const topK = $("launchSamplingTopK").value.trim();
+  const sd = {};
+  if (temp !== "") sd.temperature = Number(temp);
+  if (topP !== "") sd.top_p = Number(topP);
+  if (topK !== "") sd.top_k = Number(topK);
+  return Object.keys(sd).length ? sd : null;
+}
+
 // ── Custom element ────────────────────────────────────────────────────────
 
 class LfLaunchForm extends HTMLElement {
@@ -396,6 +407,19 @@ class LfLaunchForm extends HTMLElement {
             Response Timeout (ms)
             <input id="launchHeadersTimeout" type="number" min="1000" step="1000" placeholder="default 60000" class="launch-input" />
             <small class="launch-field-help">Max ms to wait for first response token. Increase for large/slow models.</small>
+          </label>
+          <label class="launch-field">
+            Temperature
+            <input id="launchSamplingTemp" type="number" min="0" max="2" step="0.01" placeholder="model default" class="launch-input" />
+            <small class="launch-field-help">Applied when client omits temperature.</small>
+          </label>
+          <label class="launch-field">
+            Top-P
+            <input id="launchSamplingTopP" type="number" min="0" max="1" step="0.01" placeholder="model default" class="launch-input" />
+          </label>
+          <label class="launch-field">
+            Top-K
+            <input id="launchSamplingTopK" type="number" min="0" max="500" step="1" placeholder="model default" class="launch-input" />
           </label>
           <label class="launch-field launch-field-span-3">
             <span style="display:flex;align-items:center;justify-content:space-between;width:100%">Server Args <button id="saveModelDefaultArgs" type="button" class="copy" style="padding:2px 8px;font-size:0.72em;height:auto">Save as default</button></span>
@@ -526,6 +550,7 @@ class LfLaunchForm extends HTMLElement {
           modelParallel: Number($("launchModelParallel").value || 1),
           modelTtlSeconds: parseOptionalPositiveIntegerInput("launchModelTtl"),
           headersTimeoutMs: parseOptionalPositiveIntegerInput("launchHeadersTimeout"),
+          samplingDefaults: buildSamplingDefaults(),
           restartPolicy: {
             mode: String($("launchRestartMode").value || "never"),
             maxRetries: Number($("launchRestartRetries").value || 2),
@@ -595,7 +620,10 @@ class LfLaunchForm extends HTMLElement {
     $("launchModelParallel").value = String(inst.modelParallel || 1);
     if (inst.headersTimeoutMs) $("launchHeadersTimeout").value = String(inst.headersTimeoutMs);
     else $("launchHeadersTimeout").value = "";
-
+    const sd = inst.samplingDefaults || {};
+    $('launchSamplingTemp').value = sd.temperature != null ? String(sd.temperature) : '';
+    $('launchSamplingTopP').value = sd.top_p != null ? String(sd.top_p) : '';
+    $('launchSamplingTopK').value = sd.top_k != null ? String(sd.top_k) : '';
     const rp = inst.restartPolicy || { mode: "never" };
     $("launchRestartMode").value = rp.mode || "never";
     $("launchRestartRetries").value = String(rp.maxRetries || 2);
