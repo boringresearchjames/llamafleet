@@ -225,29 +225,39 @@ function cleanMinimaxM3ControlTokens(raw) {
     //   - part of M3 syntax (e.g., [tool_call] marker)
     //   - wrapper bracket (e.g., [/invoke] → /invoke])
     // We handle each case:
+    // llama.cpp's detokenizer wraps each control-token fragment in "[ ... ]"
+    // brackets.  Segment boundaries are "][".  We split on "][" and use a
+    // regex-based approach to reconstruct the clean XML.  The preamble text
+    // (e.g. "Failed to parse input at pos N: ") may be included in the
+    // first segment and should be discarded.
+    // Strategy: find the [tool_call] marker position, then process only
+    // segments from that point onward.
     const segments = raw.split("][");
+    // Find index of first segment containing [tool_call
+    let startIdx = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const s = segments[i].startsWith("[") ? segments[i].slice(1) : segments[i];
+      if (s.startsWith("[tool_call")) {
+        startIdx = i;
+        break;
+      }
+    }
     const out = [];
-    for (const seg of segments) {
-      let s = seg;
-      // Strip leading "[" (wrapper opening)
+    for (let i = startIdx; i < segments.length; i++) {
+      let s = segments[i];
+      // Strip leading "[" (wrapper) and trailing "]" (wrapper)
       if (s.startsWith("[")) s = s.slice(1);
+      if (s.endsWith("]")) s = s.slice(0, -1);
       // Process the inner M3 content
       if (s.startsWith("[tool_call")) {
-        // M3 plain-text marker — preserve with brackets
         out.push(s);
       } else if (s.startsWith("<")) {
-        // Already XML — strip trailing "]" if present (wrapper), pass through
-        if (s.endsWith("]")) s = s.slice(0, -1);
         out.push(s);
       } else if (s.startsWith("/")) {
-        // M3 closing tag — strip trailing "]" (wrapper), prepend "<", append ">"
-        if (s.endsWith("]")) s = s.slice(0, -1);
         out.push("<" + s + ">");
       } else if (s.endsWith(">")) {
-        // M3 opening tag (starts with letter, ends with ">") — prepend "<"
         out.push("<" + s);
       } else {
-        // M3 opening tag (starts with letter, no trailing ">") — prepend "<", append ">"
         out.push("<" + s + ">");
       }
     }
