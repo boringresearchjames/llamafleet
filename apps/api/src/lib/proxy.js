@@ -587,7 +587,7 @@ function synthesizeMinimaxSseFromCompletion(completion) {
  */
 function recoverMinimaxSseParseError(sseText, modelName) {
   if (!sseText.includes("Failed to parse input")) return null;
-  if (!sseText.includes("<minimax:tool_call>") && !sseText.includes(MINIMAX_M3_CONTROL)) return null;
+  if (!sseText.includes("[minimax:tool_call]") && !sseText.includes(MINIMAX_M3_CONTROL) && !sseText.includes("[tool_call]")) return null;
   // Walk every data: line to find the first event with an error.message containing the XML.
   for (const line of sseText.split("\n")) {
     const trimmed = line.trim();
@@ -598,7 +598,33 @@ function recoverMinimaxSseParseError(sseText, modelName) {
       const obj = JSON.parse(payload);
       const recovered = recoverFromMinimaxParseError(obj, modelName);
       if (recovered) return synthesizeMinimaxSseFromCompletion(recovered);
-    } catch { /* skip */ }
+    } catch { /* fall through to raw-text extraction */ }
+    // Fallback: extract error message directly from raw SSE data text
+    // (llama-server sometimes sends raw text errors with unescaped quotes
+    // that break JSON parsing).  Look for the "Failed to parse input..."
+    // pattern and extract the embedded M3 XML.
+    if (trimmed.includes("Failed to parse input")) {
+      const xmlStart = minimaxToolCallStart(trimmed);
+      if (xmlStart >= 0) {
+        const xmlPayload = trimmed.slice(xmlStart);
+        const parsed2 = parseAnyMinimaxToolCalls(xmlPayload);
+        if (parsed2 && parsed2.toolCalls.length > 0) {
+          return synthesizeMinimaxSseFromCompletion({
+            id: `chatcmpl-recover-${Math.random().toString(36).slice(2, 11)}`,
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            model: modelName || "unknown",
+            choices: [{
+              index: 0,
+              message: { role: "assistant", content: parsed2.textBefore || null, tool_calls: parsed2.toolCalls },
+              finish_reason: "tool_calls",
+              logprobs: null
+            }],
+            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+          });
+        }
+      }
+    }
   }
   return null;
 }
