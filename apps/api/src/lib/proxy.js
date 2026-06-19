@@ -416,7 +416,11 @@ function xmlToJsonValue(xml) {
  */
 function parseMinimaxM3ToolCalls(content) {
   if (!hasMinimaxM3ToolCall(content)) return null;
-  const clean = cleanMinimaxM3ControlTokens(content);
+  // Normalize llama-server's escaped quotes from JSON error messages.
+  // After JSON.parse, HTTP body `\\\"` becomes literal `\\"` (backslash-backslash-quote).
+  // We handle both `\\"` and `\"` patterns so the XML parser sees plain quotes.
+  const normalized = content.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  const clean = cleanMinimaxM3ControlTokens(normalized);
   const tcStart = clean.indexOf("<tool_call>");
   const textBefore = (tcStart > 0 ? clean.slice(0, tcStart) : "").trim() || null;
   const toolCalls = [];
@@ -979,7 +983,7 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
         try {
           const parsed = JSON.parse(raw);
           updateInstanceUsageMetrics(instance, parsed);
-          if (!upstream.ok && isDiagnosticChat) {
+          if (!upstream.ok && (isDiagnosticChat || parsed?.error?.message?.includes?.("Failed to parse input"))) {
             // Recovery: llama-server's --jinja chat-template post-parser
             // sometimes rejects the model's own MiniMax XML output. Extract
             // the XML from the error message and synthesize a proper
