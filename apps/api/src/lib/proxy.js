@@ -542,8 +542,21 @@ function transformMinimaxNonStreaming(parsed) {
  *   does not match.
  */
 function recoverFromMinimaxParseError(parsed, modelName) {
-  const message = parsed?.error?.message || parsed?.message || "";
+  // llama-server may return the error as a bare JSON string (not an object).
+  // Extract the message text from whichever structure it comes in.
+  let message = "";
+  if (typeof parsed === "string") {
+    message = parsed;
+  } else {
+    message = parsed?.error?.message || parsed?.message || "";
+  }
   if (typeof message !== "string") return null;
+  // Normalize escaped quotes that appear after JSON.parse of the error
+  // response.  llama-server embeds M3 XML inside the error message; the
+  // quotes around attribute values become literal \" (backslash-quote) after
+  // JSON.parse.  Replace \" with " so the XML regex can match attribute
+  // values.  Also collapse double-backslashes from the original request.
+  message = message.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
   const xmlStart = minimaxToolCallStart(message);
   if (xmlStart < 0) return null;
   const xmlPayload = message.slice(xmlStart);
@@ -989,7 +1002,12 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
         try {
           const parsed = JSON.parse(raw);
           updateInstanceUsageMetrics(instance, parsed);
-          if (!upstream.ok && (isDiagnosticChat || parsed?.error?.message?.includes?.("Failed to parse input"))) {
+          // llama-server sometimes returns the error as a bare JSON string
+          // (e.g. `"Failed to parse input..."`) rather than an error object.
+          const errorIsM3 = !upstream.ok && (isDiagnosticChat ||
+            (typeof parsed === "string" && parsed.includes("Failed to parse input")) ||
+            parsed?.error?.message?.includes?.("Failed to parse input"));
+          if (errorIsM3) {
             // Recovery: llama-server's --jinja chat-template post-parser
             // sometimes rejects the model's own MiniMax XML output. Extract
             // the XML from the error message and synthesize a proper
