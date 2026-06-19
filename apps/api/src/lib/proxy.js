@@ -232,10 +232,11 @@ function cleanMinimaxM3ControlTokens(raw) {
     const out = [];
     for (const seg of segments) {
       // Check for [tool_call] marker BEFORE stripping wrapper brackets
-      if (seg.startsWith("[tool_call")) {
-        // Preserve the M3 marker as-is (wrapper brackets already stripped
-        // by the split — the segment IS the M3 content)
-        out.push(seg);
+      if (seg.startsWith("[[tool_call") || seg.startsWith("[tool_call")) {
+        // llama.cpp wraps [tool_call] in "[ ... ]" so after splitting on
+        // "][" the first segment is "[[tool_call]\n]" — output the marker
+        // cleanly and skip the normal bracket-stripping logic
+        out.push("[tool_call]");
         continue;
       }
       let s = seg;
