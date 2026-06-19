@@ -157,6 +157,11 @@ function hasMinimaxM3ToolCall(content) {
 // garbled tool call.  We escape these patterns in non-assistant messages so
 // M3 treats them as inert text rather than XML triggers.
 const MINIMAX_XML_LITERAL_MAP = [
+  // M3 control token — must be first so it's escaped before the XML patterns below.
+  // When proxy.js source lands in context, the literal "<]minimax[>" string would
+  // otherwise be tokenized as an M3 special token and cause peg-native to fail
+  // with "Failed to parse input at pos 7".
+  ["<]minimax[>",          "[minimax_ctrl]"],
   ["<minimax:tool_call>",  "[minimax:tool_call]"],
   ["</minimax:tool_call>", "[/minimax:tool_call]"],
   ["<tool_call>",          "[tool_call]"],
@@ -177,12 +182,77 @@ function escapeMinimaxXmlLiterals(text) {
 }
 
 /**
- * Strip MiniMax-M3's "<]minimax[>[ fragment ]" control-token wrappers and
+ * Convert M3 bracket syntax to XML angle brackets.
+ * [tag] → <tag>    [/tag] → </tag>    [tag attr] → <tag attr>
+ * <xml> stays unchanged.  [tool_call] stays as [tool_call].
+ */
+function convertM3ToXml(s) {
+  if (typeof s !== "string") return s;
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "[") {
+      if (s.slice(i, i + 11) === "[tool_call]") {
+        out.push("[tool_call]");
+        i += 11;
+        continue;
+      }
+      let end = s.indexOf("]", i + 1);
+      if (end === -1) end = s.length;
+      const tagContent = s.slice(i + 1, end);
+      i = end + (s[end] === ">" ? 1 : 0) + 1;
+      const isClosing = tagContent.startsWith("/");
+      out.push("<" + tagContent + ">");
+      continue;
+    }
+    out.push(s[i]);
+    i++;
+  }
+  return out.join("");
+}
+
+/**
+ * Strip MiniMax-M3's "[ fragment ]" control-token wrappers and
  * reconstruct the underlying tool-call XML. Fragments without the control
  * token (e.g. clean output from a fixed build) pass through unchanged.
  */
 function cleanMinimaxM3ControlTokens(raw) {
-  if (typeof raw !== "string" || !raw.includes(MINIMAX_M3_CONTROL)) return raw;
+  if (typeof raw !== "string") return raw;
+  if (MINIMAX_M3_CONTROL === "") {
+    // llama.cpp's detokenizer wraps each control-token fragment in "[ ... ]"
+    // brackets.  Segment boundaries are "][".  After splitting on "][",
+    // each segment has a leading "[" (wrapper).  The trailing "]" may be:
+    //   - part of M3 syntax (e.g., [tool_call] marker)
+    //   - wrapper bracket (e.g., [/invoke] → /invoke])
+    // We handle each case:
+    const segments = raw.split("][");
+    const out = [];
+    for (const seg of segments) {
+      let s = seg;
+      // Strip leading "[" (wrapper opening)
+      if (s.startsWith("[")) s = s.slice(1);
+      // Process the inner M3 content
+      if (s.startsWith("[tool_call")) {
+        // M3 plain-text marker — preserve with brackets
+        out.push(s);
+      } else if (s.startsWith("<")) {
+        // Already XML — strip trailing "]" if present (wrapper), pass through
+        if (s.endsWith("]")) s = s.slice(0, -1);
+        out.push(s);
+      } else if (s.startsWith("/")) {
+        // M3 closing tag — strip trailing "]" (wrapper), prepend "<", append ">"
+        if (s.endsWith("]")) s = s.slice(0, -1);
+        out.push("<" + s + ">");
+      } else if (s.endsWith(">")) {
+        // M3 opening tag (starts with letter, ends with ">") — prepend "<"
+        out.push("<" + s);
+      } else {
+        // M3 opening tag (starts with letter, no trailing ">") — prepend "<", append ">"
+        out.push("<" + s + ">");
+      }
+    }
+    return out.join("");
+  }
   return raw
     .split(MINIMAX_M3_CONTROL)
     .map((seg, i) => {
@@ -193,6 +263,39 @@ function cleanMinimaxM3ControlTokens(raw) {
       return s;
     })
     .join("");
+}
+
+/**
+ * Convert M3 bracket syntax in a segment to XML angle brackets.
+ * [tag] → <tag>    [/tag] → </tag>    [tool_call] → [tool_call]
+ * <xml> stays unchanged.
+ */
+function convertM3Syntax(segment) {
+  const out = [];
+  let i = 0;
+  while (i < segment.length) {
+    if (segment[i] === "[") {
+      if (segment.slice(i, i + 11) === "[tool_call]") {
+        out.push("[tool_call]");
+        i += 11;
+        continue;
+      }
+      let end = segment.indexOf("]", i + 1);
+      if (end === -1) end = segment.length;
+      const tagContent = segment.slice(i + 1, end);
+      i = end + (segment[end] === ">" ? 1 : 0) + 1;
+      const isClosing = tagContent.startsWith("/");
+      if (isClosing) {
+        out.push("<" + tagContent + ">");
+      } else {
+        out.push("<" + tagContent + ">");
+      }
+      continue;
+    }
+    out.push(segment[i]);
+    i++;
+  }
+  return out.join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -923,11 +1026,17 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
     // still allowing correct tool_calls synthesis after </mm:think>.
     // For responses with no <mm:think> block (post-tool-result continuations),
     // the first non-think delta triggers Phase 2 immediately (same as before).
+    //
+    // Phase 2 keepalive: during buffering the client sees no tokens and may time out.
+    // Send SSE comment lines every 10 s to keep the connection alive.
+    const PHASE2_KEEPALIVE_MS = 10_000;
     if (isDiagnosticChat) {
-      let acc        = "";    // accumulates raw text until we have complete SSE events
-      let thinkSeen  = false; // we have seen <mm:think>
-      let postThink  = false; // we have seen </mm:think> → Phase 2
-      const postBuf  = [];    // complete SSE event strings buffered for Phase 2
+      let acc             = "";    // accumulates raw text until we have complete SSE events
+      let thinkSeen       = false; // we have seen <mm:think>
+      let postThink       = false; // we have seen </mm:think> → Phase 2
+      let phase2Buffering = false; // true only when tool-call XML detected in Phase 2
+      const postBuf       = [];    // SSE event strings buffered ONLY for tool-call transform
+      let keepaliveTimer  = null;  // fires keepalives during tool-call buffering
 
       /** Rewrite a parsed chunk to carry reasoning_content instead of content. */
       function asReasoningChunk(chunk, delta, text) {
@@ -938,7 +1047,8 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
 
       /**
        * Process one complete SSE event string (no trailing \n\n).
-       * Streams reasoning_content deltas during Phase 1; pushes to postBuf in Phase 2.
+       * Phase 1: streams <mm:think> tokens as reasoning_content.
+       * Phase 2: streams text tokens in real-time; buffers only on tool-call XML.
        */
       function processEvent(eventText) {
         // Increment live token counter for stall detection and TPS calculation.
@@ -948,14 +1058,61 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
         // Reset start timestamp on the first token so TPS reflects decode speed,
         // not prefill wait time (prefill can take 30-90s with no tokens flowing).
         if (prevCount === 0) liveInst.currentRequestStartedAt = Date.now();
-        if (postThink) { postBuf.push(eventText); return; }
 
+        // ── Phase 2: post-</mm:think> ──────────────────────────────────────────
+        if (postThink) {
+          if (phase2Buffering) {
+            // Already in tool-call buffering mode — accumulate until EOS
+            postBuf.push(eventText); return;
+          }
+
+          // Phase 2 streaming mode: pass tokens through in real-time.
+          // Switch to buffering only if we detect actual tool-call XML.
+          const p2DataLine = eventText.split("\n").find(l => l.trimStart().startsWith("data:"));
+          if (!p2DataLine) { if (!res.writableEnded) res.write(eventText + "\n\n"); return; }
+          const p2Payload = p2DataLine.trimStart().slice(5).trim();
+          if (!p2Payload) { if (!res.writableEnded) res.write(eventText + "\n\n"); return; }
+          if (p2Payload === "[DONE]") { if (!res.writableEnded) res.write(eventText + "\n\n"); return; }
+
+          let p2Chunk;
+          try { p2Chunk = JSON.parse(p2Payload); } catch { if (!res.writableEnded) res.write(eventText + "\n\n"); return; }
+          const p2Delta   = p2Chunk?.choices?.[0]?.delta;
+          const p2Content = typeof p2Delta?.content === "string" ? p2Delta.content : null;
+
+          // Non-content delta (role header, finish_reason) — stream through
+          if (p2Content === null) { if (!res.writableEnded) res.write(eventText + "\n\n"); return; }
+
+          // Tool-call marker detected → switch to buffering + start keepalive
+          if (p2Content.includes(MINIMAX_M3_CONTROL) || p2Content.includes("<invoke name=") || p2Content.includes("<minimax:tool_call>")) {
+            phase2Buffering = true;
+            if (!keepaliveTimer) {
+              keepaliveTimer = setInterval(() => {
+                if (!res.writableEnded) res.write(": keepalive\n\n");
+              }, PHASE2_KEEPALIVE_MS);
+            }
+            postBuf.push(eventText); return;
+          }
+
+          // Strip orphaned </mm:think> (M3 emits on non-thinking turns)
+          if (p2Content.includes("</mm:think>")) {
+            const cleaned = p2Content.replace(/<mm:think>[\s\S]*?<\/mm:think>/g, "").replace(/<\/mm:think>/g, "").trim();
+            const newChunk = { ...p2Chunk, choices: [{ ...p2Chunk.choices[0], delta: { ...p2Delta, content: cleaned } }] };
+            if (!res.writableEnded) res.write(`data: ${JSON.stringify(newChunk)}\n\n`);
+            return;
+          }
+
+          // Regular Phase 2 text — stream directly
+          if (!res.writableEnded) res.write(eventText + "\n\n");
+          return;
+        }
+
+        // ── Phase 1: thinking or pre-think ────────────────────────────────────
         const dataLine = eventText.split("\n").find(l => l.trimStart().startsWith("data:"));
         if (!dataLine) { res.write(eventText + "\n\n"); return; }
 
         const payload = dataLine.trimStart().slice(5).trim();
         if (!payload) { res.write(eventText + "\n\n"); return; }
-        if (payload === "[DONE]") { postBuf.push(eventText); return; } // re-emitted after transform
+        if (payload === "[DONE]") { return; } // [DONE] only arrives in Phase 2 streaming path above
 
         let chunk;
         try { chunk = JSON.parse(payload); } catch { res.write(eventText + "\n\n"); return; }
@@ -965,9 +1122,9 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
 
         // Non-content delta (role header, finish_reason chunk, etc.)
         if (content === null) {
-          // If thinking never started, first non-content delta → switch to Phase 2
-          if (!thinkSeen) { postThink = true; postBuf.push(eventText); }
-          else { res.write(eventText + "\n\n"); }
+          // If thinking never started, first non-content delta → enter Phase 2
+          if (!thinkSeen) { postThink = true; }
+          if (!res.writableEnded) res.write(eventText + "\n\n");
           return;
         }
 
@@ -976,7 +1133,20 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
 
         // No think markers and thinking never started → Phase 2 immediately
         if (!thinkSeen && !hasOpen && !hasClose) {
-          postThink = true; postBuf.push(eventText); return;
+          postThink = true;
+          // Check immediately for tool call in the very first Phase 2 chunk
+          if (content.includes(MINIMAX_M3_CONTROL) || content.includes("<invoke name=") || content.includes("<minimax:tool_call>")) {
+            phase2Buffering = true;
+            if (!keepaliveTimer) {
+              keepaliveTimer = setInterval(() => {
+                if (!res.writableEnded) res.write(": keepalive\n\n");
+              }, PHASE2_KEEPALIVE_MS);
+            }
+            postBuf.push(eventText);
+          } else {
+            if (!res.writableEnded) res.write(eventText + "\n\n");
+          }
+          return;
         }
 
         if (hasOpen) thinkSeen = true;
@@ -995,11 +1165,22 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
 
         if (thinkPart) res.write(`data: ${JSON.stringify(asReasoningChunk(chunk, delta, thinkPart))}\n\n`);
 
-        // Switch to Phase 2
+        // Enter Phase 2
         postThink = true;
         if (rest) {
           const restChunk = { ...chunk, choices: [{ ...chunk.choices[0], delta: { ...delta, content: rest } }] };
-          postBuf.push(`data: ${JSON.stringify(restChunk)}`);
+          // Check for tool call in the first post-think token
+          if (rest.includes(MINIMAX_M3_CONTROL) || rest.includes("<invoke name=") || rest.includes("<minimax:tool_call>")) {
+            phase2Buffering = true;
+            if (!keepaliveTimer) {
+              keepaliveTimer = setInterval(() => {
+                if (!res.writableEnded) res.write(": keepalive\n\n");
+              }, PHASE2_KEEPALIVE_MS);
+            }
+            postBuf.push(`data: ${JSON.stringify(restChunk)}`);
+          } else {
+            if (!res.writableEnded) res.write(`data: ${JSON.stringify(restChunk)}\n\n`);
+          }
         }
       }
 
@@ -1018,6 +1199,7 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
 
       stream.on("end", () => {
         clearTimeout(firstTokenTimer);
+        clearInterval(keepaliveTimer); keepaliveTimer = null;
         // Compute TPS from streaming phase before resetting token counter.
         const liveInst = state.instances.find(x => x.id === instance.id) || instance;
         const startMs = Number(liveInst.currentRequestStartedAt) || 0;
@@ -1027,15 +1209,22 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
           if (elapsedSec > 0.5) liveInst.lastRequestTps = Math.round((tokenCount / elapsedSec) * 10) / 10;
         }
         markProxyCompletion(instance);
-        if (acc.trim()) postBuf.push(acc); // flush any partial trailing event
-        const sseText = postBuf.join("\n\n") + "\n\n";
-        const recovered   = recoverMinimaxSseParseError(sseText, req.body?.model);
-        const transformed = recovered ?? transformMinimaxSseBuffer(sseText);
-        if (!res.writableEnded) { res.write(transformed); res.end(); }
+        if (phase2Buffering) {
+          // Flush any partial trailing bytes then transform the tool-call buffer
+          if (acc.trim()) postBuf.push(acc);
+          const sseText = postBuf.join("\n\n") + "\n\n";
+          const recovered   = recoverMinimaxSseParseError(sseText, req.body?.model);
+          const transformed = recovered ?? transformMinimaxSseBuffer(sseText);
+          if (!res.writableEnded) { res.write(transformed); res.end(); }
+        } else {
+          // All content was streamed in real-time; just close
+          if (acc.trim() && !res.writableEnded) res.write(acc);
+          if (!res.writableEnded) res.end();
+        }
         finalize();
       });
-      stream.on("error", () => { clearTimeout(firstTokenTimer); finalize(); if (!res.writableEnded) res.end(); });
-      res.on("close", () => { clearTimeout(firstTokenTimer); finalize(); });
+      stream.on("error", () => { clearTimeout(firstTokenTimer); clearInterval(keepaliveTimer); keepaliveTimer = null; finalize(); if (!res.writableEnded) res.end(); });
+      res.on("close", () => { clearTimeout(firstTokenTimer); clearInterval(keepaliveTimer); keepaliveTimer = null; finalize(); });
     } else {
       stream.on("data", () => {
         if (!firstTokenReceived) {
