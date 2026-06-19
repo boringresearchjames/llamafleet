@@ -1004,7 +1004,18 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
             const transformed = isDiagnosticChat ? transformMinimaxNonStreaming(parsed) : parsed;
             if (transformed !== parsed) responseSent = JSON.stringify(transformed);
           }
-        } catch { /* transparent */ }
+        } catch {
+          // JSON.parse may fail when llama-server's error message contains
+          // unescaped quotes from the M3 XML.  Try to recover the M3 tool
+          // call XML directly from the raw response text.
+          if (raw.includes("Failed to parse input") && raw.includes("[tool_call]")) {
+            const recovered = recoverFromMinimaxParseError({ error: { message: raw } }, req.body?.model);
+            if (recovered) {
+              res.status(200);
+              responseSent = JSON.stringify(recovered);
+            }
+          }
+        }
       }
       if (isDiagnosticChat) {
         const preview = String(responseSent || "").replace(/\s+/g, " ").slice(0, 280);
