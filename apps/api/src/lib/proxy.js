@@ -215,43 +215,39 @@ function convertM3ToXml(s) {
  * Strip MiniMax-M3's "[ fragment ]" control-token wrappers and
  * reconstruct the underlying tool-call XML. Fragments without the control
  * token (e.g. clean output from a fixed build) pass through unchanged.
+ * Uses regex extraction to handle all M3 variants including llama-server
+ * error messages with escaped quotes and preamble text.
  */
 function cleanMinimaxM3ControlTokens(raw) {
   if (typeof raw !== "string") return raw;
   if (MINIMAX_M3_CONTROL === "") {
-    // llama.cpp's detokenizer wraps each control-token fragment in "[ ... ]"
-    // brackets.  Segment boundaries are "][".  After splitting on "][",
-    // each segment has a leading "[" (wrapper).  The trailing "]" may be:
-    //   - part of M3 syntax (e.g., [tool_call] marker)
-    //   - wrapper bracket (e.g., [/invoke] → /invoke])
-    // We handle each case:
-    // llama.cpp's detokenizer wraps each control-token fragment in "[ ... ]"
-    // brackets.  Segment boundaries are "][".  We split on "][" and use a
-    // regex-based approach to reconstruct the clean XML.  The preamble text
-    // (e.g. "Failed to parse input at pos N: ") may be included in the
-    // first segment and should be discarded.
-    // Strategy: find the [tool_call] marker position, then process only
-    // segments from that point onward.
-    const segments = raw.split("][");
-    // Find index of first segment containing [tool_call
-    let startIdx = 0;
-    for (let i = 0; i < segments.length; i++) {
-      const s = segments[i].startsWith("[") ? segments[i].slice(1) : segments[i];
-      if (s.startsWith("[tool_call")) {
-        startIdx = i;
-        break;
-      }
-    }
+    // llama.cpp wraps each M3 fragment in "[ ... ]" brackets, separated by "][".
+    // We find the first "[tool_call" in the raw text, then extract only the
+    // M3 content from that point onward, converting wrapper brackets to XML.
+    const tcIdx = raw.indexOf("[tool_call");
+    if (tcIdx < 0) return raw;
+    const m3Only = raw.slice(tcIdx);
+    // Split on "][" to get segments
+    const segments = m3Only.split("][");
     const out = [];
-    for (let i = startIdx; i < segments.length; i++) {
-      let s = segments[i];
-      // Strip leading "[" (wrapper) and trailing "]" (wrapper)
+    for (const seg of segments) {
+      // Check for [tool_call] marker BEFORE stripping wrapper brackets
+      if (seg.startsWith("[tool_call")) {
+        // Preserve the M3 marker as-is (wrapper brackets already stripped
+        // by the split — the segment IS the M3 content)
+        out.push(seg);
+        continue;
+      }
+      let s = seg;
+      // Strip leading "[" (wrapper opening)
       if (s.startsWith("[")) s = s.slice(1);
+      // Strip trailing whitespace/newlines (artifacts from detokenizer)
+      s = s.replace(/\s+$/, "");
+      // Strip trailing "]" (wrapper closing) — only if not already handled
+      // by M3 closing tag pattern [/tag]
       if (s.endsWith("]")) s = s.slice(0, -1);
       // Process the inner M3 content
-      if (s.startsWith("[tool_call")) {
-        out.push(s);
-      } else if (s.startsWith("<")) {
+      if (s.startsWith("<")) {
         out.push(s);
       } else if (s.startsWith("/")) {
         out.push("<" + s + ">");
