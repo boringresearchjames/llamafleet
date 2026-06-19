@@ -248,7 +248,9 @@ function cleanMinimaxM3ControlTokens(raw) {
       // by M3 closing tag pattern [/tag]
       if (s.endsWith("]")) s = s.slice(0, -1);
       // Process the inner M3 content
-      if (s.startsWith("<")) {
+      if (s.startsWith("</")) {
+        out.push(s);
+      } else if (s.startsWith("<")) {
         out.push(s);
       } else if (s.startsWith("/")) {
         out.push("<" + s + ">");
