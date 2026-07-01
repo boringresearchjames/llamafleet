@@ -154,6 +154,46 @@ ${Array.from({ length: 50 }, (_, i) => `<div class="item">Item ${i} content here
     expect(result.length).toBeLessThan(html.length);
   });
 
+  it("does NOT gut an SVG/HTML source file the agent is reading back (attribute payload)", () => {
+    // Regression test: a generated HTML page with an inline SVG globe carries
+    // its meaningful data in tag ATTRIBUTES (path "d", cx/cy/r, gradients),
+    // not inter-tag text. stripHtml() must not run on this — it would leave
+    // almost nothing behind, corrupting the file content in context.
+    const paths = Array.from({ length: 40 }, (_, i) =>
+      `<path d="M${i} ${i} L${i + 10} ${i + 10} A5 5 0 0 1 ${i + 20} ${i}" fill="#2b6" stroke="#000" />`
+    ).join("\n    ");
+    const html = `<!DOCTYPE html>
+<html>
+<head><style>body{margin:0;background:#000}</style></head>
+<body>
+  <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    <defs><radialGradient id="g"><stop offset="0%" stop-color="#5af"/></radialGradient></defs>
+    <circle cx="100" cy="100" r="90" fill="url(#g)" />
+    ${paths}
+  </svg>
+  <script>
+    let rotation = 0;
+    function animate() {
+      rotation += 1;
+      const el = document.querySelector('svg');
+      if (el) { el.style.transform = 'rotate(' + rotation + 'deg)'; }
+      requestAnimationFrame(animate);
+    }
+    animate();
+  </script>
+</body>
+</html>`;
+    for (const role of ["tool", "user"]) {
+      const messages = [{ role, content: html }];
+      const { messages: out } = compressMessages(messages, enabled);
+      const result = out[0].content;
+      // Must still contain the actual SVG payload — not stripped to near-nothing.
+      expect(result).toContain('cx="100"');
+      expect(result).toContain("<path d=");
+      expect(result).toContain("<svg");
+    }
+  });
+
   it("collapses similar build-output lines (pattern dedup)", () => {
     const buildLog = [
       "[ 0%] Building CXX object src/CMakeFiles/foo.dir/a.cpp.o",

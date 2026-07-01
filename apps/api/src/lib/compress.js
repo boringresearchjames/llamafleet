@@ -84,6 +84,21 @@ function isHtmlLike(text) {
     && text.includes("</");
 }
 
+/**
+ * Detect markup where the meaningful payload lives INSIDE tag attributes
+ * (SVG path/shape data, custom elements, canvas-driven pages) rather than
+ * in the text between tags. stripHtml() only preserves inter-tag text, so
+ * running it on this kind of content destroys the payload instead of
+ * compressing it — e.g. an inline `<svg>` globe is basically all
+ * `<path d="...">` / `<circle cx cy r>` / gradient attributes, and
+ * stripping tags leaves next to nothing behind.
+ */
+function isAttributeHeavyMarkup(text) {
+  if (/<svg\b/i.test(text) || /<canvas\b/i.test(text)) return true;
+  const tagChars = (text.match(/<[^>]+>/g) || []).join("").length;
+  return tagChars / (text.length || 1) > 0.55;
+}
+
 function isLogLike(text) {
   const lines = text.split("\n");
   if (lines.length < 8) return false;
@@ -93,6 +108,12 @@ function isLogLike(text) {
 }
 
 function isCodeLike(text) {
+  // An HTML/markup document embedding a <script> block is still a markup
+  // document, not "code" — route it through the HTML path instead so it
+  // gets the attribute-safety checks there rather than head+tail truncation,
+  // which would silently drop the middle of the file (e.g. the actual body
+  // markup of a generated page) for non-tool-role messages.
+  if (isHtmlLike(text)) return false;
   const lines = text.split("\n");
   if (lines.length < 20) return false;
   const codePat = /^\s*(import |export |function |class |const |let |var |def |if |for |while |return |\/\/|#!|pub |fn |async |type |interface |impl |struct |enum )/;
@@ -416,8 +437,12 @@ function compressString(text, cfg) {
   if (isCodeLike(s))   return compressCode(s, cfg);
   if (cfg.compressLogs !== false && isLogLike(s)) return compressLog(s, cfg);
 
-  if (cfg.stripHtml && isHtmlLike(s)) {
+  if (cfg.stripHtml && isHtmlLike(s) && !isAttributeHeavyMarkup(s)) {
     const plain = stripHtml(s);
+    // Bail out if stripping gutted almost all the content instead of leaving
+    // readable plain text (e.g. markup where the payload is in attributes,
+    // not inter-tag text — a case isAttributeHeavyMarkup didn't already catch).
+    if (plain.replace(/\s+/g, "").length < s.length * 0.15) return s;
     // After stripping, the result may itself be compressible
     return plain.length < s.length ? compressString(plain, { ...cfg, stripHtml: false }) : s;
   }

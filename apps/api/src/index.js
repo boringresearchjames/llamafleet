@@ -317,6 +317,11 @@ cleanupSessions();
 restorePartialDownloads();
 void checkLlamaCppUpdate();
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`lmlaunch api+web listening on ${port}`);
 });
+// Disable Node.js 18+ built-in 5-minute request timeout — SSE streams
+// (LLM generation) legitimately run for 10+ minutes. Per-instance
+// headersTimeoutMs in proxy.js handles unresponsive upstreams instead.
+server.requestTimeout = 0;
+server.headersTimeout = 0;

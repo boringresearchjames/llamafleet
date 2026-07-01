@@ -256,7 +256,7 @@ async function autoDetectModelDefaults() {
       argsInput.value = match.serverArgs || '';
       argsInput.dataset.defaultsFor = modelPath;
     } else if (argsInput.dataset.defaultsFor) {
-      argsInput.value = '-b 2048 -ub 1024 -ngl 999 --flash-attn on';
+      argsInput.value = '-b 2048 -ub 2048 -ngl 999 --flash-attn on --spec-type draft-mtp --metrics --spec-draft-n-max 4 --spec-draft-p-min 0.75 -ctk f16 -ctv f16 --prio 3 --mlock --no-mmap --jinja';
       delete argsInput.dataset.defaultsFor;
     }
   } catch (_) { /* best-effort */ }
@@ -423,7 +423,7 @@ class LfLaunchForm extends HTMLElement {
           </label>
           <label class="launch-field launch-field-span-3">
             <span style="display:flex;align-items:center;justify-content:space-between;width:100%">Server Args <button id="saveModelDefaultArgs" type="button" class="copy" style="padding:2px 8px;font-size:0.72em;height:auto">Save as default</button></span>
-            <input id="launchServerArgs" type="text" value="-b 2048 -ub 1024 -ngl 999 --flash-attn on" placeholder="e.g. --flash-attn on -b 2048" class="launch-input" />
+            <input id="launchServerArgs" type="text" value="-b 2048 -ub 2048 -ngl 999 --flash-attn on --spec-type draft-mtp --metrics --spec-draft-n-max 4 --spec-draft-p-min 0.75 -ctk f16 -ctv f16 --prio 3 --mlock --no-mmap --jinja" placeholder="e.g. --flash-attn on -b 2048" class="launch-input" />
             <small class="launch-field-help">Extra flags passed directly to llama-server. Separate with spaces.</small>
           </label>
           <label class="launch-field">

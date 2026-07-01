@@ -146,9 +146,10 @@ const MINIMAX_M3_CONTROL = "<]minimax[>";
  * the older <minimax:tool_call> tag).
  */
 function hasMinimaxM3ToolCall(content) {
-  return typeof content === "string"
-    && content.includes("<invoke name=")
-    && !content.includes("<minimax:tool_call>");
+  if (typeof content !== "string") return false;
+  // Check both raw bracket syntax and XML-converted syntax (from error recovery)
+  return (content.includes("[invoke name=") || content.includes("<invoke name="))
+    && !content.includes("[minimax:tool_call]");
 }
 
 // XML tag strings that M3 uses for tool calls.  When code files that describe
@@ -239,25 +240,29 @@ function cleanMinimaxM3ControlTokens(raw) {
         out.push("[tool_call]");
         continue;
       }
-      let s = seg;
-      // Strip leading "[" (wrapper opening)
-      if (s.startsWith("[")) s = s.slice(1);
-      // Strip trailing whitespace/newlines (artifacts from detokenizer)
-      s = s.replace(/\s+$/, "");
-      // Strip trailing "]" (wrapper closing) — only if not already handled
-      // by M3 closing tag pattern [/tag]
-      if (s.endsWith("]")) s = s.slice(0, -1);
-      // Process the inner M3 content
-      if (s.startsWith("</")) {
-        out.push(s);
-      } else if (s.startsWith("<")) {
-        out.push(s);
-      } else if (s.startsWith("/")) {
-        out.push("<" + s + ">");
-      } else if (s.endsWith(">")) {
-        out.push("<" + s);
+      // Handle different wrapper patterns from llama.cpp's detokenizer:
+      //   [[...]] — control token wrapper (e.g. [[tool_call]\n])
+      //   [...]> — M3 opening tag with > closer
+      //   [...] — M3 closing tag with ] closer
+      //   [</tag>] — clean XML inside wrapper
+      //   [tag attr]> — M3 opening tag
+      //   No brackets — clean XML passes through
+      if (seg.startsWith("[[")) {
+        // Double-bracket wrapper: strip first [ and trailing ] if present
+        let inner = seg.slice(1);
+        if (inner.endsWith("]")) inner = inner.slice(0, -1);
+        out.push(convertM3Syntax(inner));
+      } else if (seg.startsWith("[</")) {
+        // Clean XML closing tag inside single wrapper: [</tag>]
+        out.push(seg.slice(1, -1));
+      } else if (seg.startsWith("[<")) {
+        // Clean XML opening tag inside single wrapper: [<tag>val]
+        out.push(seg.slice(1, -1));
+      } else if (seg.includes("[")) {
+        // M3 bracket syntax: convert to XML
+        out.push(convertM3Syntax(seg));
       } else {
-        out.push("<" + s + ">");
+        out.push(seg.replace(/\s+$/, ""));
       }
     }
     return out.join("");
@@ -276,8 +281,9 @@ function cleanMinimaxM3ControlTokens(raw) {
 
 /**
  * Convert M3 bracket syntax in a segment to XML angle brackets.
- * [tag] → <tag>    [/tag] → </tag>    [tool_call] → [tool_call]
- * <xml> stays unchanged.
+ * [tag] → <tag>    [/tag] → </tag>    [tag attr]> → <tag attr>
+ * [tool_call] → [tool_call]    <xml> stays unchanged.
+ * Handles M3's two closer styles: ] for closing tags and > for opening tags.
  */
 function convertM3Syntax(segment) {
   const out = [];
@@ -289,15 +295,24 @@ function convertM3Syntax(segment) {
         i += 11;
         continue;
       }
-      let end = segment.indexOf("]", i + 1);
-      if (end === -1) end = segment.length;
-      const tagContent = segment.slice(i + 1, end);
-      i = end + (segment[end] === ">" ? 1 : 0) + 1;
-      const isClosing = tagContent.startsWith("/");
-      if (isClosing) {
+      // Find the closing delimiter: prefer ] over > (M3 closing tags like [/tag]
+      // have ] while opening tags like [tag attr]> use > as the closer).
+      let bracketEnd = segment.indexOf("]", i + 1);
+      let gtEnd = segment.indexOf(">", i + 1);
+      if (bracketEnd >= 0 && (gtEnd === -1 || bracketEnd <= gtEnd)) {
+        // ] comes first or no > found — M3 closing tag [/tag]
+        const tagContent = segment.slice(i + 1, bracketEnd);
         out.push("<" + tagContent + ">");
+        i = bracketEnd + 1;
+      } else if (gtEnd >= 0) {
+        // > comes first — M3 opening tag [tag attr]>
+        const tagContent = segment.slice(i + 1, gtEnd);
+        out.push("<" + tagContent + ">");
+        i = gtEnd + 1;
       } else {
-        out.push("<" + tagContent + ">");
+        // No ] or > found — consume to end
+        out.push("<" + segment.slice(i + 1) + ">");
+        i = segment.length;
       }
       continue;
     }
@@ -424,12 +439,13 @@ function xmlToJsonValue(xml) {
  * Returns { textBefore, toolCalls } or null if no tool calls are present.
  */
 function parseMinimaxM3ToolCalls(content) {
-  if (!hasMinimaxM3ToolCall(content)) return null;
-  // Normalize llama-server's escaped quotes from JSON error messages.
-  // After JSON.parse, HTTP body `\\\"` becomes literal `\\"` (backslash-backslash-quote).
-  // We handle both `\\"` and `\"` patterns so the XML parser sees plain quotes.
-  const normalized = content.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  const clean = cleanMinimaxM3ControlTokens(normalized);
+  // Normalize escaped quotes first — after JSON.parse, M3 XML attributes
+  // in error messages contain literal \" which must be unescaped before
+  // any pattern matching or bracket conversion.  Must handle \\\\ before \"
+  // so \\\\\" → \\" → " (not \\" → \" which would be wrong).
+  const unescaped = content.replace(/\\\\/g, "\\").replace(/\\"/g, '"');
+  if (!hasMinimaxM3ToolCall(unescaped)) return null;
+  const clean = cleanMinimaxM3ControlTokens(unescaped);
   const tcStart = clean.indexOf("<tool_call>");
   const textBefore = (tcStart > 0 ? clean.slice(0, tcStart) : "").trim() || null;
   const toolCalls = [];
@@ -468,7 +484,12 @@ function minimaxToolCallStart(text) {
   const i2 = text.indexOf("<minimax:tool_call>");
   if (i2 >= 0) indices.push(i2);
   if (hasMinimaxM3ToolCall(text)) {
-    for (const idx of [text.indexOf(MINIMAX_M3_CONTROL), text.indexOf("<tool_call>"), text.indexOf("<invoke name=")]) {
+    for (const idx of [
+      MINIMAX_M3_CONTROL ? text.indexOf(MINIMAX_M3_CONTROL) : -1,
+      text.indexOf("[[tool_call"),
+      text.indexOf("[tool_call]"),
+      text.indexOf("[invoke name=")
+    ]) {
       if (idx >= 0) indices.push(idx);
     }
   }
@@ -550,8 +571,12 @@ function recoverFromMinimaxParseError(parsed, modelName) {
   let message = "";
   if (typeof parsed === "string") {
     message = parsed;
+  } else if (parsed?.error) {
+    // llama-server may return error as a string: {"error":"Failed..."}
+    // or as an object: {"error":{"message":"Failed..."}}
+    message = typeof parsed.error === "string" ? parsed.error : (parsed.error.message || parsed.error || "");
   } else {
-    message = parsed?.error?.message || parsed?.message || "";
+    message = parsed?.message || "";
   }
   if (typeof message !== "string") return null;
   // Normalize escaped quotes that appear after JSON.parse of the error
@@ -559,7 +584,7 @@ function recoverFromMinimaxParseError(parsed, modelName) {
   // quotes around attribute values become literal \" (backslash-quote) after
   // JSON.parse.  Replace \" with " so the XML regex can match attribute
   // values.  Also collapse double-backslashes from the original request.
-  message = message.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  message = message.replace(/\\\\/g, "\\").replace(/\\"/g, '"');
   const xmlStart = minimaxToolCallStart(message);
   if (xmlStart < 0) return null;
   const xmlPayload = message.slice(xmlStart);
@@ -653,6 +678,53 @@ function recoverMinimaxSseParseError(sseText, modelName) {
     }
   }
   return null;
+}
+
+/**
+ * Strip stray MiniMax-M3 control-token wrapper artifacts ("<]minimax[>[ ... ]")
+ * from a plain (already-extracted) delta text fragment before it is streamed
+ * to the client as reasoning_content. M3's detokenizer can wrap ordinary
+ * thinking-phase text in this marker too, not just tool-call XML — Phase 2
+ * checks every content chunk for it (and buffers/converts on detection), but
+ * Phase 1 (reasoning) never did, so it leaked straight into visible
+ * reasoning_content as literal punctuation (e.g. trailing "]]"). Thinking
+ * text never legitimately contains a real <invoke>, so it's always safe to
+ * just strip the wrapper here rather than buffer it. No-op for clean text.
+ */
+function stripStrayM3Wrapper(text) {
+  if (typeof text !== "string" || !text.includes(MINIMAX_M3_CONTROL)) return text;
+  return cleanMinimaxM3ControlTokens(text);
+}
+
+/**
+ * Detect and recover llama-server's own "Failed to parse input at pos N"
+ * error when it arrives as a standalone SSE event mid-stream (in place of the
+ * expected finish_reason:"tool_calls" event). This happens when llama-server's
+ * --jinja post-parser fails to convert M3's completed tool-call XML into a
+ * structured finish event. Such an event has no choices[].delta.content, so
+ * without this check it would be written straight through to the client as
+ * raw (and useless/broken) SSE data. Returns true if handled (caller should
+ * stop processing this event and end the response), false otherwise.
+ */
+function tryRecoverStreamedM3Error(res, eventText, modelName) {
+  if (!eventText.includes("Failed to parse input")) return false;
+  const dataLine = eventText.split("\n").find(l => l.trimStart().startsWith("data:"));
+  const payload = dataLine ? dataLine.trimStart().slice(5).trim() : eventText;
+  let candidate = payload;
+  try {
+    const parsed = JSON.parse(payload);
+    candidate = parsed?.error?.message
+      ?? (typeof parsed?.error === "string" ? parsed.error : null)
+      ?? (typeof parsed === "string" ? parsed : payload);
+  } catch { /* not valid JSON — use the raw payload text directly */ }
+  if (typeof candidate !== "string" || !candidate.includes("Failed to parse input")) return false;
+  const recovered = recoverFromMinimaxParseError({ error: { message: candidate } }, modelName);
+  if (!recovered) return false;
+  if (!res.writableEnded) {
+    res.write(synthesizeMinimaxSseFromCompletion(recovered));
+    res.end();
+  }
+  return true;
 }
 
 /**
@@ -792,6 +864,55 @@ function stripMinimaxXml(text) {
   return cleaned.length > 0 ? cleaned : null;
 }
 
+/**
+ * Scan an assistant message's existing tool_calls array for MiniMax M3
+ * control-token / raw XML contamination inside function.arguments strings.
+ * This can happen when llama-server's own peg-native parser partially or
+ * incorrectly converts M3's control-token output, leaving raw
+ * "<]minimax[>[<invoke ...>]" fragments embedded in an argument value
+ * instead of clean JSON. Replaying that message back as history causes
+ * "Failed to parse input at pos N" on a later request, because the chat
+ * template re-embeds the raw fragment into the rendered prompt text and
+ * llama-server's own parser then chokes on it.
+ * Returns { toolCalls, changed }.
+ */
+function sanitizeToolCallArguments(toolCalls) {
+  let changed = false;
+  const cleaned = toolCalls.map((tc) => {
+    const argsRaw = tc?.function?.arguments;
+    if (typeof argsRaw !== "string") return tc;
+    const isContaminated = MINIMAX_XML_LITERAL_MAP.some(([from]) => argsRaw.includes(from))
+      || argsRaw.includes("<invoke name=") || argsRaw.includes("<minimax:tool_call>");
+    if (!isContaminated) return tc;
+    changed = true;
+    let newArgs;
+    try {
+      const parsedArgs = JSON.parse(argsRaw);
+      const walk = (v) => {
+        if (typeof v === "string") return escapeMinimaxXmlLiterals(v);
+        if (Array.isArray(v)) return v.map(walk);
+        if (v && typeof v === "object") {
+          const o = {};
+          for (const [k, val] of Object.entries(v)) o[k] = walk(val);
+          return o;
+        }
+        return v;
+      };
+      newArgs = JSON.stringify(walk(parsedArgs));
+    } catch {
+      // arguments isn't valid JSON — it's raw contaminated text from a
+      // botched upstream conversion. Neutralize the trigger tokens so
+      // llama-server's parser doesn't choke on replay; the client will
+      // still see malformed JSON here (the damage was already done
+      // upstream), but the conversation can continue instead of hard
+      // failing with a 500 on every subsequent turn.
+      newArgs = escapeMinimaxXmlLiterals(argsRaw);
+    }
+    return { ...tc, function: { ...tc.function, arguments: newArgs } };
+  });
+  return { toolCalls: cleaned, changed };
+}
+
 function sanitizeMessagesForMinimax(messages) {
   if (!Array.isArray(messages)) return messages;
   let changed = false;
@@ -825,10 +946,27 @@ function sanitizeMessagesForMinimax(messages) {
     const reasoningHasXml = hasMinimaxToolCall(flatReasoning);
     // Strip bare </mm:think> that M3 leaks into content on non-thinking turns.
     const contentHasOrphanThink = typeof flatContent === "string" && flatContent.includes("</mm:think>");
-    if (!contentHasXml && !reasoningHasXml && !contentHasOrphanThink) return msg;
+
+    // An already-present tool_calls array can itself carry contaminated
+    // function.arguments strings — e.g. when llama-server's own peg-native
+    // parser only partially converts M3's control-token output, leaving raw
+    // "<]minimax[>[<invoke ...>]" fragments embedded inside an argument
+    // value instead of clean JSON. content/reasoning_content are typically
+    // null on these turns (nothing to catch above), so without this check
+    // the message sails through untouched. Replaying it as history makes
+    // llama-server's chat template re-embed the raw fragment into the
+    // prompt text, which its own parser then rejects with
+    // "Failed to parse input at pos N: <]minimax[>...".
+    const toolCallsResult = Array.isArray(msg.tool_calls)
+      ? sanitizeToolCallArguments(msg.tool_calls)
+      : null;
+    const toolCallsContaminated = !!toolCallsResult?.changed;
+
+    if (!contentHasXml && !reasoningHasXml && !contentHasOrphanThink && !toolCallsContaminated) return msg;
 
     changed = true;
     const out = { ...msg };
+    if (toolCallsContaminated) out.tool_calls = toolCallsResult.toolCalls;
 
     if (contentHasOrphanThink && !contentHasXml) {
       const cleaned = flatContent
@@ -1119,6 +1257,18 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
        * Phase 2: streams text tokens in real-time; buffers only on tool-call XML.
        */
       function processEvent(eventText) {
+        // llama-server sometimes replaces the expected finish event with its
+        // own "Failed to parse input at pos N" error mid-stream (it has no
+        // choices[].delta, so it would otherwise fall through to the raw
+        // passthrough branches below). Intercept and recover before anything else.
+        if (tryRecoverStreamedM3Error(res, eventText, req.body?.model)) {
+          clearTimeout(firstTokenTimer);
+          clearInterval(keepaliveTimer); keepaliveTimer = null;
+          markProxyCompletion(instance);
+          finalize();
+          stream.destroy();
+          return;
+        }
         // Increment live token counter for stall detection and TPS calculation.
         const liveInst = state.instances.find(x => x.id === instance.id) || instance;
         const prevCount = Number(liveInst.currentRequestTokens) || 0;
@@ -1221,14 +1371,14 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
 
         if (!hasClose) {
           // Pure think content — strip the open tag and emit as reasoning_content
-          const clean = content.replace(/<mm:think>/g, "");
+          const clean = stripStrayM3Wrapper(content.replace(/<mm:think>/g, ""));
           if (clean) res.write(`data: ${JSON.stringify(asReasoningChunk(chunk, delta, clean))}\n\n`);
           return;
         }
 
         // This event contains </mm:think> — split at the close tag
         const ci        = content.indexOf("</mm:think>");
-        const thinkPart = content.slice(0, ci).replace(/<mm:think>/g, "");
+        const thinkPart = stripStrayM3Wrapper(content.slice(0, ci).replace(/<mm:think>/g, ""));
         const rest      = content.slice(ci + "</mm:think>".length).trim();
 
         if (thinkPart) res.write(`data: ${JSON.stringify(asReasoningChunk(chunk, delta, thinkPart))}\n\n`);
