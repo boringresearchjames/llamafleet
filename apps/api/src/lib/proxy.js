@@ -140,6 +140,12 @@ function parseMinimaxXmlToolCalls(content) {
 // underlying XML, and parse it into OpenAI tool_calls.
 
 const MINIMAX_M3_CONTROL = "<]minimax[>";
+// The TRUE special token in M3's vocab (confirmed from llama.cpp's
+// common/chat.cpp, common_chat_params_init_minimax_m3: `NS = "]<]minimax[>["`)
+// wraps MINIMAX_M3_CONTROL with a leading "]" and a trailing "[", and is used
+// to prefix EVERY XML tag boundary (open and close) in a tool call. It is
+// NOT a "[content]"-style wrapper around arbitrary text.
+const MINIMAX_M3_NS = "]" + MINIMAX_M3_CONTROL + "[";
 
 /**
  * Detect MiniMax-M3 style tool-call markup (<invoke name="..."> not wrapped in
@@ -1235,14 +1241,14 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
       let phase2Buffering = false; // true only when tool-call XML detected in Phase 2
       const postBuf       = [];    // SSE event strings buffered ONLY for tool-call transform
       let keepaliveTimer  = null;  // fires keepalives during tool-call buffering
-      // True when a control-token wrapper was opened in a PRIOR chunk (this
-      // event's content had "<]minimax[>[" with no matching "]" yet) — the
-      // detokenizer can split a wrapper's closing "]" into its own separate
-      // SSE delta with no control token in it, so a plain per-chunk check for
-      // MINIMAX_M3_CONTROL misses it entirely and the bare "]" leaks through
-      // as visible text right at the segment boundary (e.g. just before a
-      // tool call renders). Tracked across chunks for the life of this stream.
-      let m3PendingBracketClose = false;
+      // Any suffix of a PRIOR chunk that could be the START of a not-yet-
+      // complete occurrence of the M3 special token MINIMAX_M3_NS
+      // ("]<]minimax[>["). The model's detokenizer can split this atomic
+      // token across two separate SSE deltas (most commonly leaving just its
+      // lone leading "]" in one chunk, with the rest arriving in the next) —
+      // held back here and re-merged via mergeM3Carry() so a fragment never
+      // leaks through as visible text. Tracked for the life of this stream.
+      let m3Carry = "";
 
       /** Rewrite a parsed chunk to carry reasoning_content instead of content. */
       function asReasoningChunk(chunk, delta, text) {
@@ -1252,45 +1258,40 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
       }
 
       /**
-       * Strip MiniMax-M3 control-token wrapper artifacts from a plain text
-       * fragment, INCLUDING a stray wrapper-closing "]" that arrives as its
-       * own separate chunk after an earlier chunk opened (but didn't close)
-       * the wrapper. Safe to call on any plain (non-tool-call) content chunk
-       * in either phase.
+       * Prepend any carried-over partial-NS fragment from a prior chunk to
+       * this chunk's raw content, and clear the carry. MUST be called first,
+       * on every content-bearing chunk, BEFORE any tool-call-marker check —
+       * a real tool call's opening tag can arrive glued directly onto a split
+       * token fragment in the very next delta.
+       */
+      function mergeM3Carry(text) {
+        if (typeof text !== "string" || !m3Carry) return text;
+        const merged = m3Carry + text;
+        m3Carry = "";
+        return merged;
+      }
+
+      /**
+       * Remove all COMPLETE occurrences of the M3 special token from an
+       * already carry-merged (via mergeM3Carry) plain-text fragment, holding
+       * back any trailing fragment that could be the START of a not-yet-
+       * complete occurrence (picked up by mergeM3Carry on the next chunk
+       * instead of being emitted as visible text). Safe to call on any plain
+       * (non-tool-call) content chunk in either phase.
        */
       function stripStreamedM3Artifacts(text) {
         if (typeof text !== "string") return text;
         let s = text;
-        if (m3PendingBracketClose) {
-          m3PendingBracketClose = false;
-          if (s.startsWith("]")) s = s.slice(1);
+        if (s.includes(MINIMAX_M3_NS)) s = s.split(MINIMAX_M3_NS).join("");
+        const maxLen = Math.min(MINIMAX_M3_NS.length - 1, s.length);
+        for (let n = maxLen; n > 0; n--) {
+          if (s.slice(-n) === MINIMAX_M3_NS.slice(0, n)) {
+            m3Carry = s.slice(-n);
+            s = s.slice(0, -n);
+            break;
+          }
         }
-        if (!s.includes(MINIMAX_M3_CONTROL)) return s;
-        const cleaned = cleanMinimaxM3ControlTokens(s);
-        // Did the LAST control-token segment in this chunk fail to close with
-        // "]"? If so, the close bracket is still coming in a future chunk.
-        const lastSeg = s.slice(s.lastIndexOf(MINIMAX_M3_CONTROL) + MINIMAX_M3_CONTROL.length);
-        const afterOpen = lastSeg.startsWith("[") ? lastSeg.slice(1) : lastSeg;
-        if (!afterOpen.replace(/\s+$/, "").endsWith("]")) m3PendingBracketClose = true;
-        return cleaned;
-      }
-
-      /**
-       * Consume a stray wrapper-closing "]" left dangling from a wrapper that
-       * was opened in a PRIOR chunk (m3PendingBracketClose). MUST be called on
-       * every content-bearing chunk BEFORE any tool-call-marker check — the
-       * detokenizer can glue the leftover "]" directly onto the start of a
-       * real tool-call chunk in the SAME delta (e.g. "]<minimax:tool_call>...",
-       * or "\n\n]<minimax:tool_call>..."), so checking for the marker on raw
-       * text first (as the buffering-decision code does) would leak the
-       * bracket into the buffered/reconstructed tool-call content. Only the
-       * bracket character itself is dropped — any surrounding whitespace is
-       * preserved so real formatting isn't disturbed.
-       */
-      function consumePendingBracket(text) {
-        if (!m3PendingBracketClose || typeof text !== "string") return text;
-        m3PendingBracketClose = false;
-        return text.replace(/^(\s*)\]/, "$1");
+        return s;
       }
 
       /**
@@ -1343,11 +1344,11 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
           if (p2Content === null) { if (!res.writableEnded) res.write(eventText + "\n\n"); return; }
 
           const p2RawContent = p2Content;
-          // Consume a stray wrapper-closing "]" left dangling from a wrapper
-          // opened in a PRIOR chunk — MUST run before the tool-call marker
-          // check below, since the bracket can arrive glued to the start of a
-          // real tool-call chunk in the SAME delta.
-          p2Content = consumePendingBracket(p2Content);
+          // Merge in any carried-over partial-NS fragment from a prior chunk
+          // — MUST run before the tool-call marker check below, since a split
+          // token fragment can arrive glued to the start of a real tool-call
+          // chunk in the SAME delta.
+          p2Content = mergeM3Carry(p2Content);
 
           // Tool-call marker detected → switch to buffering + start keepalive
           if (p2Content.includes(MINIMAX_M3_CONTROL) || p2Content.includes("<invoke name=") || p2Content.includes("<minimax:tool_call>")) {
@@ -1409,11 +1410,10 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
         }
 
         const rawContent = content;
-        // Consume a stray wrapper-closing "]" left dangling from a wrapper
-        // opened in a PRIOR chunk — MUST run before any tool-call marker
-        // check below (it can arrive glued to real tool-call content in the
-        // SAME delta, in either phase).
-        content = consumePendingBracket(content);
+        // Merge in any carried-over partial-NS fragment from a prior chunk —
+        // MUST run before any tool-call marker check below (it can arrive
+        // glued to real tool-call content in the SAME delta, in either phase).
+        content = mergeM3Carry(content);
 
         const hasOpen  = content.includes("<mm:think>");
         const hasClose = content.includes("</mm:think>");
@@ -1522,7 +1522,20 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
           const transformed = recovered ?? transformMinimaxSseBuffer(sseText);
           if (!res.writableEnded) { res.write(transformed); res.end(); }
         } else {
-          // All content was streamed in real-time; just close
+          // All content was streamed in real-time; just close. Flush any
+          // leftover carried-over fragment first — it was conservatively
+          // held back on the chance it was the start of a split M3 special
+          // token, but the stream just ended with nothing more arriving, so
+          // it must be genuine trailing text (or, worst case, an
+          // unrecognizable stray fragment) rather than silently dropped.
+          if (m3Carry && !res.writableEnded) {
+            res.write(`data: ${JSON.stringify({
+              id: "chatcmpl-m3carry", object: "chat.completion.chunk",
+              created: Math.floor(Date.now() / 1000), model: req.body?.model || "",
+              choices: [{ index: 0, delta: { content: m3Carry }, finish_reason: null }]
+            })}\n\n`);
+            m3Carry = "";
+          }
           if (acc.trim() && !res.writableEnded) res.write(acc);
           if (!res.writableEnded) res.end();
         }
