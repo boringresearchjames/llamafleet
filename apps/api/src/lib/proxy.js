@@ -681,22 +681,6 @@ function recoverMinimaxSseParseError(sseText, modelName) {
 }
 
 /**
- * Strip stray MiniMax-M3 control-token wrapper artifacts ("<]minimax[>[ ... ]")
- * from a plain (already-extracted) delta text fragment before it is streamed
- * to the client as reasoning_content. M3's detokenizer can wrap ordinary
- * thinking-phase text in this marker too, not just tool-call XML — Phase 2
- * checks every content chunk for it (and buffers/converts on detection), but
- * Phase 1 (reasoning) never did, so it leaked straight into visible
- * reasoning_content as literal punctuation (e.g. trailing "]]"). Thinking
- * text never legitimately contains a real <invoke>, so it's always safe to
- * just strip the wrapper here rather than buffer it. No-op for clean text.
- */
-function stripStrayM3Wrapper(text) {
-  if (typeof text !== "string" || !text.includes(MINIMAX_M3_CONTROL)) return text;
-  return cleanMinimaxM3ControlTokens(text);
-}
-
-/**
  * Detect and recover llama-server's own "Failed to parse input at pos N"
  * error when it arrives as a standalone SSE event mid-stream (in place of the
  * expected finish_reason:"tool_calls" event). This happens when llama-server's
@@ -1243,12 +1227,44 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
       let phase2Buffering = false; // true only when tool-call XML detected in Phase 2
       const postBuf       = [];    // SSE event strings buffered ONLY for tool-call transform
       let keepaliveTimer  = null;  // fires keepalives during tool-call buffering
+      // True when a control-token wrapper was opened in a PRIOR chunk (this
+      // event's content had "<]minimax[>[" with no matching "]" yet) — the
+      // detokenizer can split a wrapper's closing "]" into its own separate
+      // SSE delta with no control token in it, so a plain per-chunk check for
+      // MINIMAX_M3_CONTROL misses it entirely and the bare "]" leaks through
+      // as visible text right at the segment boundary (e.g. just before a
+      // tool call renders). Tracked across chunks for the life of this stream.
+      let m3PendingBracketClose = false;
 
       /** Rewrite a parsed chunk to carry reasoning_content instead of content. */
       function asReasoningChunk(chunk, delta, text) {
         const d = { ...delta, reasoning_content: text };
         delete d.content;
         return { ...chunk, choices: [{ ...chunk.choices[0], delta: d }] };
+      }
+
+      /**
+       * Strip MiniMax-M3 control-token wrapper artifacts from a plain text
+       * fragment, INCLUDING a stray wrapper-closing "]" that arrives as its
+       * own separate chunk after an earlier chunk opened (but didn't close)
+       * the wrapper. Safe to call on any plain (non-tool-call) content chunk
+       * in either phase.
+       */
+      function stripStreamedM3Artifacts(text) {
+        if (typeof text !== "string") return text;
+        let s = text;
+        if (m3PendingBracketClose) {
+          m3PendingBracketClose = false;
+          if (s.startsWith("]")) s = s.slice(1);
+        }
+        if (!s.includes(MINIMAX_M3_CONTROL)) return s;
+        const cleaned = cleanMinimaxM3ControlTokens(s);
+        // Did the LAST control-token segment in this chunk fail to close with
+        // "]"? If so, the close bracket is still coming in a future chunk.
+        const lastSeg = s.slice(s.lastIndexOf(MINIMAX_M3_CONTROL) + MINIMAX_M3_CONTROL.length);
+        const afterOpen = lastSeg.startsWith("[") ? lastSeg.slice(1) : lastSeg;
+        if (!afterOpen.replace(/\s+$/, "").endsWith("]")) m3PendingBracketClose = true;
+        return cleaned;
       }
 
       /**
@@ -1313,13 +1329,23 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
 
           // Strip orphaned </mm:think> (M3 emits on non-thinking turns)
           if (p2Content.includes("</mm:think>")) {
-            const cleaned = p2Content.replace(/<mm:think>[\s\S]*?<\/mm:think>/g, "").replace(/<\/mm:think>/g, "").trim();
+            const cleaned = stripStreamedM3Artifacts(p2Content.replace(/<mm:think>[\s\S]*?<\/mm:think>/g, "").replace(/<\/mm:think>/g, "").trim());
             const newChunk = { ...p2Chunk, choices: [{ ...p2Chunk.choices[0], delta: { ...p2Delta, content: cleaned } }] };
             if (!res.writableEnded) res.write(`data: ${JSON.stringify(newChunk)}\n\n`);
             return;
           }
 
-          // Regular Phase 2 text — stream directly
+          // Regular Phase 2 text — stream directly, but still scrub any stray
+          // wrapper bracket left dangling from a prior chunk (or opened here
+          // without closing, in which case the flag carries to the next call).
+          const p2Cleaned = stripStreamedM3Artifacts(p2Content);
+          if (p2Cleaned !== p2Content) {
+            if (p2Cleaned) {
+              const newChunk = { ...p2Chunk, choices: [{ ...p2Chunk.choices[0], delta: { ...p2Delta, content: p2Cleaned } }] };
+              if (!res.writableEnded) res.write(`data: ${JSON.stringify(newChunk)}\n\n`);
+            }
+            return;
+          }
           if (!res.writableEnded) res.write(eventText + "\n\n");
           return;
         }
@@ -1362,7 +1388,15 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
             }
             postBuf.push(eventText);
           } else {
-            if (!res.writableEnded) res.write(eventText + "\n\n");
+            const cleanedFirst = stripStreamedM3Artifacts(content);
+            if (cleanedFirst !== content) {
+              if (cleanedFirst) {
+                const newChunk = { ...chunk, choices: [{ ...chunk.choices[0], delta: { ...delta, content: cleanedFirst } }] };
+                if (!res.writableEnded) res.write(`data: ${JSON.stringify(newChunk)}\n\n`);
+              }
+            } else if (!res.writableEnded) {
+              res.write(eventText + "\n\n");
+            }
           }
           return;
         }
@@ -1371,14 +1405,14 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
 
         if (!hasClose) {
           // Pure think content — strip the open tag and emit as reasoning_content
-          const clean = stripStrayM3Wrapper(content.replace(/<mm:think>/g, ""));
+          const clean = stripStreamedM3Artifacts(content.replace(/<mm:think>/g, ""));
           if (clean) res.write(`data: ${JSON.stringify(asReasoningChunk(chunk, delta, clean))}\n\n`);
           return;
         }
 
         // This event contains </mm:think> — split at the close tag
         const ci        = content.indexOf("</mm:think>");
-        const thinkPart = stripStrayM3Wrapper(content.slice(0, ci).replace(/<mm:think>/g, ""));
+        const thinkPart = stripStreamedM3Artifacts(content.slice(0, ci).replace(/<mm:think>/g, ""));
         const rest      = content.slice(ci + "</mm:think>".length).trim();
 
         if (thinkPart) res.write(`data: ${JSON.stringify(asReasoningChunk(chunk, delta, thinkPart))}\n\n`);
@@ -1386,9 +1420,11 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
         // Enter Phase 2
         postThink = true;
         if (rest) {
-          const restChunk = { ...chunk, choices: [{ ...chunk.choices[0], delta: { ...delta, content: rest } }] };
-          // Check for tool call in the first post-think token
+          // Check for tool call in the first post-think token (on the RAW rest,
+          // before any stray-bracket cleanup — a real tool call must go through
+          // the buffering/parse path, not simple bracket stripping).
           if (rest.includes(MINIMAX_M3_CONTROL) || rest.includes("<invoke name=") || rest.includes("<minimax:tool_call>")) {
+            const restChunk = { ...chunk, choices: [{ ...chunk.choices[0], delta: { ...delta, content: rest } }] };
             phase2Buffering = true;
             if (!keepaliveTimer) {
               keepaliveTimer = setInterval(() => {
@@ -1397,7 +1433,11 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
             }
             postBuf.push(`data: ${JSON.stringify(restChunk)}`);
           } else {
-            if (!res.writableEnded) res.write(`data: ${JSON.stringify(restChunk)}\n\n`);
+            const cleanedRest = stripStreamedM3Artifacts(rest);
+            if (cleanedRest) {
+              const restChunk = { ...chunk, choices: [{ ...chunk.choices[0], delta: { ...delta, content: cleanedRest } }] };
+              if (!res.writableEnded) res.write(`data: ${JSON.stringify(restChunk)}\n\n`);
+            }
           }
         }
       }
