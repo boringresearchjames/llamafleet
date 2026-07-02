@@ -270,7 +270,15 @@ function cleanMinimaxM3ControlTokens(raw) {
   return raw
     .split(MINIMAX_M3_CONTROL)
     .map((seg, i) => {
-      if (i === 0) return seg; // preamble before the first control token
+      if (i === 0) {
+        // Preamble before the first control token. The TRUE special token in
+        // the model's vocab is "]" + MINIMAX_M3_CONTROL + "[" (confirmed from
+        // llama.cpp's common/chat.cpp: `NS = "]<]minimax[>["`) — we only
+        // split on the middle portion, so this segment still carries that
+        // token's leading "]" bracket at its tail. There's no preceding NS
+        // here to have donated a leading "[", so only strip the trailing "]".
+        return seg.endsWith("]") ? seg.slice(0, -1) : seg;
+      }
       let s = seg;
       if (s.startsWith("[")) s = s.slice(1);
       if (s.endsWith("]")) s = s.slice(0, -1);
