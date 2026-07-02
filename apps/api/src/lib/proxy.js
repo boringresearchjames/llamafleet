@@ -1268,6 +1268,24 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
       }
 
       /**
+       * Consume a stray wrapper-closing "]" left dangling from a wrapper that
+       * was opened in a PRIOR chunk (m3PendingBracketClose). MUST be called on
+       * every content-bearing chunk BEFORE any tool-call-marker check — the
+       * detokenizer can glue the leftover "]" directly onto the start of a
+       * real tool-call chunk in the SAME delta (e.g. "]<minimax:tool_call>...",
+       * or "\n\n]<minimax:tool_call>..."), so checking for the marker on raw
+       * text first (as the buffering-decision code does) would leak the
+       * bracket into the buffered/reconstructed tool-call content. Only the
+       * bracket character itself is dropped — any surrounding whitespace is
+       * preserved so real formatting isn't disturbed.
+       */
+      function consumePendingBracket(text) {
+        if (!m3PendingBracketClose || typeof text !== "string") return text;
+        m3PendingBracketClose = false;
+        return text.replace(/^(\s*)\]/, "$1");
+      }
+
+      /**
        * Process one complete SSE event string (no trailing \n\n).
        * Phase 1: streams <mm:think> tokens as reasoning_content.
        * Phase 2: streams text tokens in real-time; buffers only on tool-call XML.
@@ -1311,10 +1329,17 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
           let p2Chunk;
           try { p2Chunk = JSON.parse(p2Payload); } catch { if (!res.writableEnded) res.write(eventText + "\n\n"); return; }
           const p2Delta   = p2Chunk?.choices?.[0]?.delta;
-          const p2Content = typeof p2Delta?.content === "string" ? p2Delta.content : null;
+          let p2Content   = typeof p2Delta?.content === "string" ? p2Delta.content : null;
 
           // Non-content delta (role header, finish_reason) — stream through
           if (p2Content === null) { if (!res.writableEnded) res.write(eventText + "\n\n"); return; }
+
+          const p2RawContent = p2Content;
+          // Consume a stray wrapper-closing "]" left dangling from a wrapper
+          // opened in a PRIOR chunk — MUST run before the tool-call marker
+          // check below, since the bracket can arrive glued to the start of a
+          // real tool-call chunk in the SAME delta.
+          p2Content = consumePendingBracket(p2Content);
 
           // Tool-call marker detected → switch to buffering + start keepalive
           if (p2Content.includes(MINIMAX_M3_CONTROL) || p2Content.includes("<invoke name=") || p2Content.includes("<minimax:tool_call>")) {
@@ -1324,7 +1349,10 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
                 if (!res.writableEnded) res.write(": keepalive\n\n");
               }, PHASE2_KEEPALIVE_MS);
             }
-            postBuf.push(eventText); return;
+            const bufEvent = p2Content !== p2RawContent
+              ? `data: ${JSON.stringify({ ...p2Chunk, choices: [{ ...p2Chunk.choices[0], delta: { ...p2Delta, content: p2Content } }] })}`
+              : eventText;
+            postBuf.push(bufEvent); return;
           }
 
           // Strip orphaned </mm:think> (M3 emits on non-thinking turns)
@@ -1339,7 +1367,7 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
           // wrapper bracket left dangling from a prior chunk (or opened here
           // without closing, in which case the flag carries to the next call).
           const p2Cleaned = stripStreamedM3Artifacts(p2Content);
-          if (p2Cleaned !== p2Content) {
+          if (p2Cleaned !== p2RawContent) {
             if (p2Cleaned) {
               const newChunk = { ...p2Chunk, choices: [{ ...p2Chunk.choices[0], delta: { ...p2Delta, content: p2Cleaned } }] };
               if (!res.writableEnded) res.write(`data: ${JSON.stringify(newChunk)}\n\n`);
@@ -1362,7 +1390,7 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
         try { chunk = JSON.parse(payload); } catch { res.write(eventText + "\n\n"); return; }
 
         const delta   = chunk?.choices?.[0]?.delta;
-        const content = typeof delta?.content === "string" ? delta.content : null;
+        let content   = typeof delta?.content === "string" ? delta.content : null;
 
         // Non-content delta (role header, finish_reason chunk, etc.)
         if (content === null) {
@@ -1371,6 +1399,13 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
           if (!res.writableEnded) res.write(eventText + "\n\n");
           return;
         }
+
+        const rawContent = content;
+        // Consume a stray wrapper-closing "]" left dangling from a wrapper
+        // opened in a PRIOR chunk — MUST run before any tool-call marker
+        // check below (it can arrive glued to real tool-call content in the
+        // SAME delta, in either phase).
+        content = consumePendingBracket(content);
 
         const hasOpen  = content.includes("<mm:think>");
         const hasClose = content.includes("</mm:think>");
@@ -1386,10 +1421,13 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
                 if (!res.writableEnded) res.write(": keepalive\n\n");
               }, PHASE2_KEEPALIVE_MS);
             }
-            postBuf.push(eventText);
+            const bufEvent = content !== rawContent
+              ? `data: ${JSON.stringify({ ...chunk, choices: [{ ...chunk.choices[0], delta: { ...delta, content } }] })}`
+              : eventText;
+            postBuf.push(bufEvent);
           } else {
             const cleanedFirst = stripStreamedM3Artifacts(content);
-            if (cleanedFirst !== content) {
+            if (cleanedFirst !== rawContent) {
               if (cleanedFirst) {
                 const newChunk = { ...chunk, choices: [{ ...chunk.choices[0], delta: { ...delta, content: cleanedFirst } }] };
                 if (!res.writableEnded) res.write(`data: ${JSON.stringify(newChunk)}\n\n`);
@@ -1420,9 +1458,10 @@ export async function proxyToInstance(instance, req, res, targetUrl) {
         // Enter Phase 2
         postThink = true;
         if (rest) {
-          // Check for tool call in the first post-think token (on the RAW rest,
-          // before any stray-bracket cleanup — a real tool call must go through
-          // the buffering/parse path, not simple bracket stripping).
+          // Check for tool call in the post-think token (pending-bracket
+          // cleanup already applied above, at the top of this event) — a
+          // real tool call must still go through the buffering/parse path,
+          // not simple bracket stripping.
           if (rest.includes(MINIMAX_M3_CONTROL) || rest.includes("<invoke name=") || rest.includes("<minimax:tool_call>")) {
             const restChunk = { ...chunk, choices: [{ ...chunk.choices[0], delta: { ...delta, content: rest } }] };
             phase2Buffering = true;
